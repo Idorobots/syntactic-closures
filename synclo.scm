@@ -6,10 +6,7 @@
                   (number->string *gensym-counter*))))
 
 (define (execute code)
-  (eval code user-initial-environment))
-
-(define (call proc . args)
-  (apply proc args))
+  (eval code))
 
 (define (compile syntactic-env exp)
   (syntactic-env syntactic-env exp))
@@ -76,7 +73,7 @@
   exp)
 
 (define (compile-combination syntactic-env exp)
-  `(call ,@(compile-list syntactic-env exp)))
+  `(,@(compile-list syntactic-env exp)))
 
 (define (compile-simple syntactic-env exp)
   `(,(car exp) ,@(compile-list syntactic-env (cdr exp))))
