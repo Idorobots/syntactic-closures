@@ -264,20 +264,22 @@
                                   (cdddr exp))))))
 
 (define (quasiquote-expander syntactic-env exp)
+  (define (mse expr)
+    (make-syntactic-closure syntactic-env '()
+                            expr))
   (let* ((body (cadr exp)))
-    ;; FIXME All the conses etc are expanded within the macro-use env.
     (make-syntactic-closure
-     syntactic-env '()
+     scheme-syntactic-environment '()
      (cond ((or (null? body)
                 (symbol? body))
-            `(quote ,body))
+            `(quote ,(mse body)))
            ((and (pair? body)
                  (eq? (car body) 'unquote))
-            (cadr body))
+            (mse (cadr body)))
            ((pair? body)
             `(cons
-              ,(list 'quasiquote (car body))
-              ,(list 'quasiquote (cdr body))))
+              ,(mse (list 'quasiquote (car body)))
+              ,(mse (list 'quasiquote (cdr body)))))
            (else
             body)))))
 
