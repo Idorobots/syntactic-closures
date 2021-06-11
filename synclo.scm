@@ -15,20 +15,20 @@
 (define (execute code)
   (eval code))
 
-(define (compile syntactic-env exp)
+(define (expand syntactic-env exp)
   (syntactic-env syntactic-env exp))
 
-(define (compile-list syntactic-env exps)
+(define (expand-list syntactic-env exps)
   (map (lambda (exp)
-         (syntactic-env syntactic-env exp))
+         (expand syntactic-env exp))
        exps))
 
 (define (extend-syntactic-environment outer-syntactic-env keyword expander)
   (lambda (syntactic-env exp)
     (if (and (pair? exp)
              (eq? (car exp) keyword))
-        (compile null-syntactic-environment
-                 (expander syntactic-env exp))
+        (expand null-syntactic-environment
+                (expander syntactic-env exp))
         (outer-syntactic-env syntactic-env exp))))
 
 (define (add-identifier-list syntactic-env identifiers)
@@ -64,44 +64,44 @@
 
 (define (null-syntactic-environment syntactic-env exp)
   (if (syntactic-closure? exp)
-      (compile-syntactic-closure syntactic-env exp)
+      (expand-syntactic-closure syntactic-env exp)
       (error (list "Unclosed expression:" exp))))
 
 (define (core-syntactic-environment syntactic-env exp)
-  ((cond ((syntactic-closure? exp) compile-syntactic-closure)
-         ((symbol? exp) compile-free-variable)
-         ((not (pair? exp)) compile-constant)
+  ((cond ((syntactic-closure? exp) expand-syntactic-closure)
+         ((symbol? exp) expand-free-variable)
+         ((not (pair? exp)) expand-constant)
          (else (case (car exp)
-                 ((quote) compile-constant)
-                 ((if begin set!) compile-simple)
-                 ((lambda) compile-lambda)
-                 (else compile-combination))))
+                 ((quote) expand-constant)
+                 ((if begin set!) expand-simple)
+                 ((lambda) expand-lambda)
+                 (else expand-combination))))
    syntactic-env
    exp))
 
-(define (compile-constant syntactic-env exp)
+(define (expand-constant syntactic-env exp)
   exp)
 
-(define (compile-free-variable syntactic-env exp)
+(define (expand-free-variable syntactic-env exp)
   exp)
 
-(define (compile-combination syntactic-env exp)
-  `(,@(compile-list syntactic-env exp)))
+(define (expand-combination syntactic-env exp)
+  `(,@(expand-list syntactic-env exp)))
 
-(define (compile-simple syntactic-env exp)
-  `(,(car exp) ,@(compile-list syntactic-env (cdr exp))))
+(define (expand-simple syntactic-env exp)
+  `(,(car exp) ,@(expand-list syntactic-env (cdr exp))))
 
-(define (compile-lambda syntactic-env exp)
+(define (expand-lambda syntactic-env exp)
   (let ((syntactic-env (add-identifier-list syntactic-env
                                             (cadr exp))))
-    `(lambda ,(compile-list syntactic-env (cadr exp))
-       ,@(compile-list syntactic-env (cddr exp)))))
+    `(lambda ,(expand-list syntactic-env (cadr exp))
+       ,@(expand-list syntactic-env (cddr exp)))))
 
-(define (compile-syntactic-closure free-names-syntactic-env syntactic-closure)
-  (compile (filter-syntactic-env (syntactic-closure-free-names syntactic-closure)
-                                 free-names-syntactic-env
-                                 (syntactic-closure-syntactic-env syntactic-closure))
-           (syntactic-closure-exp syntactic-closure)))
+(define (expand-syntactic-closure free-names-syntactic-env syntactic-closure)
+  (expand (filter-syntactic-env (syntactic-closure-free-names syntactic-closure)
+                                free-names-syntactic-env
+                                (syntactic-closure-syntactic-env syntactic-closure))
+          (syntactic-closure-exp syntactic-closure)))
 
 (define (let-expander syntactic-env exp)
   (let ((identifiers (map car (cadr exp))))
@@ -202,9 +202,9 @@
 (define (with-macro-expander with-macro-syntactic-env exp)
   (let* ((keyword (caadr exp))
          (transformer (execute
-                       (compile scheme-syntactic-environment
-                                `(lambda ,(cdadr exp)
-                                   ,(caddr exp)))))
+                       (expand scheme-syntactic-environment
+                               `(lambda ,(cdadr exp)
+                                  ,(caddr exp)))))
          (expander (lambda (syntactic-env exp)
                      (make-syntactic-closure
                       with-macro-syntactic-env '()
@@ -225,9 +225,9 @@
 (define (with-macro-rec-expander with-macro-syntactic-env exp)
   (let* ((keyword (caadr exp))
          (transformer (execute
-                       (compile scheme-syntactic-environment
-                                `(lambda ,(cdadr exp)
-                                   ,(caddr exp)))))
+                       (expand scheme-syntactic-environment
+                               `(lambda ,(cdadr exp)
+                                  ,(caddr exp)))))
          (extended-syntactic-env #f)
          (expander (lambda (syntactic-env exp)
                      (make-syntactic-closure
@@ -263,45 +263,45 @@
                (list 'with-macro with-macro-expander)
                (list 'with-macro-rec with-macro-rec-expander))))
 
-(compile scheme-syntactic-environment
-         '(begin
-            (cond ((or (something? x)
-                       (something-else? y))
-                   do this stuff)
-                  ((otherwise?)
-                   (let ((x 23))
-                     (* x x)))
-                  (else
-                   23))
-            (case 23
-              ((23) #t)
-              ((5 7 13) 'nope)
-              (else
-               ':shrug:))
-            (lambda (let*)
-              (let ((a b))
-                c))
-            (lambda (let)
-              (let ((a b))
-                c))
-            (with-macro (let x y)
-                        `(begin
-                           (display "letting ")
-                           (display ,x)
-                           (display " to do ")
-                           (display ,y)
-                           (newline))
-                        (lambda (let)
-                          (let ((a b))
-                            c)))
-            (with-macro (let x y)
-                        `(begin
-                           (display "letting ")
-                           (display ,x)
-                           (display " to do ")
-                           (display ,y)
-                           (newline))
-                        (lambda (let*)
-                          (let ((a b))
-                            c)))
-            (display "wut")))
+(expand scheme-syntactic-environment
+        '(begin
+           (cond ((or (something? x)
+                      (something-else? y))
+                  do this stuff)
+                 ((otherwise?)
+                  (let ((x 23))
+                    (* x x)))
+                 (else
+                  23))
+           (case 23
+             ((23) #t)
+             ((5 7 13) 'nope)
+             (else
+              ':shrug:))
+           (lambda (let*)
+             (let ((a b))
+               c))
+           (lambda (let)
+             (let ((a b))
+               c))
+           (with-macro (let x y)
+                       `(begin
+                          (display "letting ")
+                          (display ,x)
+                          (display " to do ")
+                          (display ,y)
+                          (newline))
+                       (lambda (let)
+                         (let ((a b))
+                           c)))
+           (with-macro (let x y)
+                       `(begin
+                          (display "letting ")
+                          (display ,x)
+                          (display " to do ")
+                          (display ,y)
+                          (newline))
+                       (lambda (let*)
+                         (let ((a b))
+                           c)))
+           (display "wut")))
