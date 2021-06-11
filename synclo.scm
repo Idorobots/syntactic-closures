@@ -83,16 +83,20 @@
   (procedure? x))
 
 (define (expand-expander expander syntactic-env exp)
-  ;; FIXME This ought to error out if expansion of the expander-produced code contains free-vars.
-  (expand null-syntactic-environment
-          (expander syntactic-env exp)))
+  ;; FIXME This now matches the behaviour from the original paper. Not sure if this is desirable.
+  (let ((value (expander syntactic-env exp)))
+    (if (syntactic-closure? value)
+        (expand-syntactic-closure syntactic-env
+                                  value)
+        (error "Unescaped value" exp))))
 
 (define (expand-constant syntactic-env exp)
   exp)
 
 (define (expand-quote syntactic-env exp)
-  ;; FIXME This currently doesn't expand embedded unquotes.
-  exp)
+  (if (syntactic-closure? (cadr exp))
+      `(quote ,(syntactic-closure-exp (cadr exp)))
+      exp))
 
 (define (expand-free-variable syntactic-env exp)
   exp)
@@ -109,11 +113,11 @@
     `(lambda ,(expand-list syntactic-env (cadr exp))
        ,@(expand-list syntactic-env (cddr exp)))))
 
-(define (expand-syntactic-closure free-names-syntactic-env syntactic-closure)
-  (expand (filter-syntactic-environment (syntactic-closure-free-names syntactic-closure)
+(define (expand-syntactic-closure free-names-syntactic-env exp)
+  (expand (filter-syntactic-environment (syntactic-closure-free-names exp)
                                         free-names-syntactic-env
-                                        (syntactic-closure-syntactic-env syntactic-closure))
-          (syntactic-closure-exp syntactic-closure)))
+                                        (syntactic-closure-syntactic-env exp))
+          (syntactic-closure-exp exp)))
 
 (define (let-expander syntactic-env exp)
   (let ((identifiers (map car (cadr exp))))
@@ -259,6 +263,24 @@
                                   extended-syntactic-env '()
                                   (cdddr exp))))))
 
+(define (quasiquote-expander syntactic-env exp)
+  (let* ((body (cadr exp)))
+    ;; FIXME All the conses etc are expanded within the macro-use env.
+    (make-syntactic-closure
+     syntactic-env '()
+     (cond ((or (null? body)
+                (symbol? body))
+            `(quote ,body))
+           ((and (pair? body)
+                 (eq? (car body) 'unquote))
+            (cadr body))
+           ((pair? body)
+            `(cons
+              ,(list 'quasiquote (car body))
+              ,(list 'quasiquote (cdr body))))
+           (else
+            body)))))
+
 (define scheme-syntactic-environment
   (foldl (lambda (expander syntactic-env)
            (extend-syntactic-environment
@@ -273,7 +295,8 @@
                (list 'cond cond-expander)
                (list 'case case-expander)
                (list 'with-macro with-macro-expander)
-               (list 'with-macro-rec with-macro-rec-expander))))
+               (list 'with-macro-rec with-macro-rec-expander)
+               (list 'quasiquote quasiquote-expander))))
 
 (expand scheme-syntactic-environment
         '(begin
@@ -299,9 +322,9 @@
            (with-macro (let x y)
                        `(begin
                           (display "letting ")
-                          (display ,x)
+                          (display ',x)
                           (display " to do ")
-                          (display ,y)
+                          (display ',y)
                           (newline))
                        (lambda (let)
                          (let ((a b))
@@ -309,11 +332,11 @@
            (with-macro (let x y)
                        `(begin
                           (display "letting ")
-                          (display ,x)
+                          (display ',x)
                           (display " to do ")
-                          (display ,y)
+                          (display ',y)
                           (newline))
                        (lambda (let*)
                          (let ((a b))
                            c)))
-           (display "wut")))
+           (display `(list ,(+ 2 2) "wut"))))
