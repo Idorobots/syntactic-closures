@@ -5,6 +5,13 @@
    (string-append (symbol->string root)
                   (number->string *gensym-counter*))))
 
+(define-struct syntactic-closure (syntactic-env free-names exp) #:transparent)
+
+(define (make-syntactic-closure-list syntactic-env free-names exps)
+  (map (lambda (exp)
+         (make-syntactic-closure syntactic-env free-names exp))
+       exps))
+
 (define (execute code)
   (eval code))
 
@@ -90,25 +97,11 @@
     `(lambda ,(compile-list syntactic-env (cadr exp))
        ,@(compile-list syntactic-env (cddr exp)))))
 
-(define (make-syntactic-closure syntactic-env free-names exp)
-  (vector 'syntactic-closure
-          (lambda (free-names-syntactic-env)
-            (compile (filter-syntactic-env free-names free-names-syntactic-env syntactic-env)
-                     exp))))
-
-(define (make-syntactic-closure-list syntactic-env free-names exps)
-  (map (lambda (exp)
-         (make-syntactic-closure syntactic-env free-names exp))
-       exps))
-
-(define (syntactic-closure? x)
-  (and (vector? x)
-       (= 2 (vector-length x))
-       (eq? 'syntactic-closure (vector-ref x 0))))
-
-(define (compile-syntactic-closure syntactic-env syntactic-closure)
-  ((vector-ref syntactic-closure 1) syntactic-env))
-
+(define (compile-syntactic-closure free-names-syntactic-env syntactic-closure)
+  (compile (filter-syntactic-env (syntactic-closure-free-names syntactic-closure)
+                                 free-names-syntactic-env
+                                 (syntactic-closure-syntactic-env syntactic-closure))
+           (syntactic-closure-exp syntactic-closure)))
 
 (define (let-expander syntactic-env exp)
   (let ((identifiers (map car (cadr exp))))
