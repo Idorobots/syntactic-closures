@@ -36,7 +36,13 @@
     (lambda (syntactic-env exp)
       (if (eq? exp identifier)
           variable
-          (outer-syntactic-env syntactic-env exp)))))
+          (if (and (pair? exp)
+                   (eq? (car exp) identifier))
+              (cons variable
+                    (map (lambda (e)
+                           (outer-syntactic-env syntactic-env e))
+                         (cdr exp)))
+              (outer-syntactic-env syntactic-env exp))))))
 
 (define (filter-syntactic-env names names-syntactic-env else-syntactic-env)
   (lambda (syntactic-env exp)
