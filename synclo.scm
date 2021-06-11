@@ -15,21 +15,17 @@
 (define (execute code)
   (eval code))
 
-(define (expand syntactic-env exp)
-  (syntactic-env syntactic-env exp))
+(define null-syntactic-environment '())
 
-(define (expand-list syntactic-env exps)
-  (map (lambda (exp)
-         (expand syntactic-env exp))
-       exps))
+(define core-syntactic-environment null-syntactic-environment)
 
-(define (extend-syntactic-environment outer-syntactic-env keyword expander)
-  (lambda (syntactic-env exp)
-    (if (and (pair? exp)
-             (eq? (car exp) keyword))
-        (expand null-syntactic-environment
-                (expander syntactic-env exp))
-        (outer-syntactic-env syntactic-env exp))))
+(define (extend-syntactic-environment outer-env keyword expander)
+  (cons (cons keyword expander)
+        outer-env))
+
+(define (add-identifier outer-env identifier)
+  (let ((variable (gensym identifier)))
+    (extend-syntactic-environment outer-env identifier variable)))
 
 (define (add-identifier-list syntactic-env identifiers)
   (if (null? identifiers)
@@ -38,48 +34,64 @@
                                            (cdr identifiers))
                       (car identifiers))))
 
-(define (add-identifier outer-syntactic-env identifier)
-  (let ((variable (gensym identifier)))
-    (lambda (syntactic-env exp)
-      (if (eq? exp identifier)
-          variable
-          (if (and (pair? exp)
-                   (eq? (car exp) identifier))
-              (cons variable
-                    (map (lambda (e)
-                           (outer-syntactic-env syntactic-env e))
-                         (cdr exp)))
-              (outer-syntactic-env syntactic-env exp))))))
+(define (filter-syntactic-environment names names-syntactic-env else-syntactic-env)
+  (append (filter (lambda (expander)
+                    (memq (car expander) names))
+                  names-syntactic-env)
+          else-syntactic-env))
 
-(define (filter-syntactic-env names names-syntactic-env else-syntactic-env)
-  (lambda (syntactic-env exp)
-    ((if (memq (if (pair? exp)
-                   (car exp)
-                   exp)
-               names)
-         names-syntactic-env
-         else-syntactic-env)
-     syntactic-env
-     exp)))
+(define (syntactic-environment-def syntactic-env keyword)
+  (assoc keyword syntactic-env))
 
-(define (null-syntactic-environment syntactic-env exp)
-  (if (syntactic-closure? exp)
-      (expand-syntactic-closure syntactic-env exp)
-      (error (list "Unclosed expression:" exp))))
-
-(define (core-syntactic-environment syntactic-env exp)
+(define (expand syntactic-env exp)
   ((cond ((syntactic-closure? exp) expand-syntactic-closure)
-         ((symbol? exp) expand-free-variable)
+         ((symbol? exp) expand-symbol)
          ((not (pair? exp)) expand-constant)
          (else (case (car exp)
-                 ((quote) expand-constant)
+                 ((quote) expand-quote)
                  ((if begin set!) expand-simple)
                  ((lambda) expand-lambda)
-                 (else expand-combination))))
+                 (else expand-application))))
    syntactic-env
    exp))
 
+(define (expand-list syntactic-env exps)
+  (map (lambda (exp)
+         (expand syntactic-env exp))
+       exps))
+
+(define (expand-symbol syntactic-env exp)
+  (let ((def (syntactic-environment-def syntactic-env exp)))
+    (if def
+        (if (expander? (cdr def))
+            ;; FIXME Should this expand symbols here?
+            (expand-expander (cdr def) syntactic-env exp)
+            (cdr def))
+        (expand-free-variable syntactic-env exp))))
+
+(define (expand-application syntactic-env exp)
+  (let* ((op (car exp))
+         (def (syntactic-environment-def syntactic-env op)))
+    (if def
+        (if (expander? (cdr def))
+            (expand-expander (cdr def) syntactic-env exp)
+            ;; NOTE Originally the cdr is expanded in the outer env.
+            (expand-combination syntactic-env exp))
+        (expand-combination syntactic-env exp))))
+
+(define (expander? x)
+  (procedure? x))
+
+(define (expand-expander expander syntactic-env exp)
+  ;; FIXME This ought to error out if expansion of the expander-produced code contains free-vars.
+  (expand null-syntactic-environment
+          (expander syntactic-env exp)))
+
 (define (expand-constant syntactic-env exp)
+  exp)
+
+(define (expand-quote syntactic-env exp)
+  ;; FIXME This currently doesn't expand embedded unquotes.
   exp)
 
 (define (expand-free-variable syntactic-env exp)
@@ -98,9 +110,9 @@
        ,@(expand-list syntactic-env (cddr exp)))))
 
 (define (expand-syntactic-closure free-names-syntactic-env syntactic-closure)
-  (expand (filter-syntactic-env (syntactic-closure-free-names syntactic-closure)
-                                free-names-syntactic-env
-                                (syntactic-closure-syntactic-env syntactic-closure))
+  (expand (filter-syntactic-environment (syntactic-closure-free-names syntactic-closure)
+                                        free-names-syntactic-env
+                                        (syntactic-closure-syntactic-env syntactic-closure))
           (syntactic-closure-exp syntactic-closure)))
 
 (define (let-expander syntactic-env exp)
