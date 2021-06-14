@@ -5,11 +5,11 @@
    (string-append (symbol->string root)
                   (number->string *gensym-counter*))))
 
-(define-struct syntactic-closure (syntactic-env free-names exp) #:transparent)
+(define-struct syntactic-closure (env free-names exp) #:transparent)
 
-(define (make-syntactic-closure-list syntactic-env free-names exps)
+(define (make-syntactic-closure-list env free-names exps)
   (map (lambda (exp)
-         (make-syntactic-closure syntactic-env free-names exp))
+         (make-syntactic-closure env free-names exp))
        exps))
 
 (define (execute code)
@@ -27,10 +27,10 @@
   (let ((variable (gensym identifier)))
     (extend-syntactic-environment outer-env identifier variable)))
 
-(define (add-identifier-list syntactic-env identifiers)
+(define (add-identifier-list env identifiers)
   (if (null? identifiers)
-      syntactic-env
-      (add-identifier (add-identifier-list syntactic-env
+      env
+      (add-identifier (add-identifier-list env
                                            (cdr identifiers))
                       (car identifiers))))
 
@@ -40,10 +40,10 @@
                   names-syntactic-env)
           else-syntactic-env))
 
-(define (syntactic-environment-def syntactic-env keyword)
-  (assoc keyword syntactic-env))
+(define (syntactic-environment-def env keyword)
+  (assoc keyword env))
 
-(define (expand syntactic-env exp)
+(define (expand env exp)
   ((cond ((syntactic-closure? exp) expand-syntactic-closure)
          ((symbol? exp) expand-symbol)
          ((not (pair? exp)) expand-constant)
@@ -52,93 +52,93 @@
                  ((if begin set!) expand-simple)
                  ((lambda) expand-lambda)
                  (else expand-application))))
-   syntactic-env
+   env
    exp))
 
-(define (expand-list syntactic-env exps)
+(define (expand-list env exps)
   (map (lambda (exp)
-         (expand syntactic-env exp))
+         (expand env exp))
        exps))
 
-(define (expand-symbol syntactic-env exp)
-  (let ((def (syntactic-environment-def syntactic-env exp)))
+(define (expand-symbol env exp)
+  (let ((def (syntactic-environment-def env exp)))
     (if def
         (if (expander? (cdr def))
             ;; FIXME Should this expand symbols here?
-            (expand-expander (cdr def) syntactic-env exp)
+            (expand-expander (cdr def) env exp)
             (cdr def))
-        (expand-free-variable syntactic-env exp))))
+        (expand-free-variable env exp))))
 
-(define (expand-application syntactic-env exp)
+(define (expand-application env exp)
   (let* ((op (car exp))
-         (def (syntactic-environment-def syntactic-env op)))
+         (def (syntactic-environment-def env op)))
     (if def
         (if (expander? (cdr def))
-            (expand-expander (cdr def) syntactic-env exp)
+            (expand-expander (cdr def) env exp)
             ;; NOTE Originally the cdr is expanded in the outer env.
-            (expand-combination syntactic-env exp))
-        (expand-combination syntactic-env exp))))
+            (expand-combination env exp))
+        (expand-combination env exp))))
 
 (define (expander? x)
   (procedure? x))
 
-(define (expand-expander expander syntactic-env exp)
+(define (expand-expander expander env exp)
   ;; FIXME This now matches the behaviour from the original paper. Not sure if this is desirable.
-  (let ((value (expander syntactic-env exp)))
+  (let ((value (expander env exp)))
     (if (syntactic-closure? value)
-        (expand-syntactic-closure syntactic-env
+        (expand-syntactic-closure env
                                   value)
         (error "Unescaped value" exp))))
 
-(define (expand-constant syntactic-env exp)
+(define (expand-constant env exp)
   exp)
 
-(define (expand-quote syntactic-env exp)
+(define (expand-quote env exp)
   (if (syntactic-closure? (cadr exp))
       `(quote ,(syntactic-closure-exp (cadr exp)))
       exp))
 
-(define (expand-free-variable syntactic-env exp)
+(define (expand-free-variable env exp)
   exp)
 
-(define (expand-combination syntactic-env exp)
-  `(,@(expand-list syntactic-env exp)))
+(define (expand-combination env exp)
+  `(,@(expand-list env exp)))
 
-(define (expand-simple syntactic-env exp)
-  `(,(car exp) ,@(expand-list syntactic-env (cdr exp))))
+(define (expand-simple env exp)
+  `(,(car exp) ,@(expand-list env (cdr exp))))
 
-(define (expand-lambda syntactic-env exp)
-  (let ((syntactic-env (add-identifier-list syntactic-env
+(define (expand-lambda env exp)
+  (let ((env (add-identifier-list env
                                             (cadr exp))))
-    `(lambda ,(expand-list syntactic-env (cadr exp))
-       ,@(expand-list syntactic-env (cddr exp)))))
+    `(lambda ,(expand-list env (cadr exp))
+       ,@(expand-list env (cddr exp)))))
 
 (define (expand-syntactic-closure free-names-syntactic-env exp)
   (expand (filter-syntactic-environment (syntactic-closure-free-names exp)
                                         free-names-syntactic-env
-                                        (syntactic-closure-syntactic-env exp))
+                                        (syntactic-closure-env exp))
           (syntactic-closure-exp exp)))
 
-(define (let-expander syntactic-env exp)
+(define (let-expander env exp)
   (let ((identifiers (map car (cadr exp))))
     (make-syntactic-closure scheme-syntactic-environment '()
                             `((lambda ,identifiers
                                 ,@(make-syntactic-closure-list
-                                   syntactic-env identifiers
+                                   env identifiers
                                    (cddr exp)))
                               ,@(make-syntactic-closure-list
-                                 syntactic-env '()
+                                 env '()
                                  (map cadr (cadr exp)))))))
 
-(define (delay-expander syntactic-env exp)
-  (let ((delayed (make-syntactic-closure syntactic-env '()
+(define (delay-expander env exp)
+  (let ((delayed (make-syntactic-closure env '()
                                          (cadr exp))))
     (make-syntactic-closure scheme-syntactic-environment '()
                             `(make-promise (lambda () ,delayed)))))
 
-(define (and-expander syntactic-env exp)
+(define (and-expander env exp)
   (let ((operands (make-syntactic-closure-list
-                   syntactic-env '()
+                   env '()
                    (cdr exp))))
     (cond ((null? operands)
            (make-syntactic-closure scheme-syntactic-environment '() '#t))
@@ -151,9 +151,9 @@
                                           (and ,@(cdr operands))
                                           temp)))))))
 
-(define (or-expander syntactic-env exp)
+(define (or-expander env exp)
   (let ((operands (make-syntactic-closure-list
-                   syntactic-env '()
+                   env '()
                    (cdr exp))))
     (cond ((null? operands)
            (make-syntactic-closure scheme-syntactic-environment '() '#f))
@@ -166,14 +166,14 @@
                                           temp
                                           (or ,@(cdr operands)))))))))
 
-(define (cond-expander syntactic-env exp)
-  (define (process-cond-clauses syntactic-env clauses)
-    (let ((body (make-syntactic-closure-list syntactic-env '() (cdar clauses))))
+(define (cond-expander env exp)
+  (define (process-cond-clauses env clauses)
+    (let ((body (make-syntactic-closure-list env '() (cdar clauses))))
       (cond ((not (null? (cdr clauses)))
              (let ((test (make-syntactic-closure
-                          syntactic-env '()
+                          env '()
                           (caar clauses)))
-                   (rest (process-cond-clauses syntactic-env
+                   (rest (process-cond-clauses env
                                                (cdr clauses))))
                (if (null? body)
                    `(or ,test ,rest)
@@ -184,24 +184,24 @@
              `(begin ,@body))
             (else
              (let ((test (make-syntactic-closure
-                          syntactic-env '()
+                          env '()
                           (caar clauses))))
                (if (null? body)
                    test
                    `(if ,test
                         (begin ,@body))))))))
   (make-syntactic-closure scheme-syntactic-environment '()
-                          (process-cond-clauses syntactic-env (cdr exp))))
+                          (process-cond-clauses env (cdr exp))))
 
-(define (case-expander syntactic-env exp)
-  (define (process-case-clauses syntactic-env clauses)
+(define (case-expander env exp)
+  (define (process-case-clauses env clauses)
     (let ((data (caar clauses))
           (body (make-syntactic-closure-list
-                 syntactic-env '()
+                 env '()
                  (cdar clauses))))
       (cond ((not (null? (cdr clauses)))
              (let ((rest (process-case-clauses
-                          syntactic-env (cdr clauses))))
+                          env (cdr clauses))))
                `(if (memv temp ',data)
                     (begin ,@body)
                     ,rest)))
@@ -211,61 +211,61 @@
              `(if (memv temp ',data)
                   (begin ,@body))))))
   (make-syntactic-closure scheme-syntactic-environment '()
-                          `(let ((temp ,(make-syntactic-closure syntactic-env '()
+                          `(let ((temp ,(make-syntactic-closure env '()
                                                                 (cadr exp))))
-                             ,(process-case-clauses syntactic-env (cddr exp)))))
+                             ,(process-case-clauses env (cddr exp)))))
 
-(define (with-macro-expander with-macro-syntactic-env exp)
+(define (with-macro-expander with-macro-env exp)
   (let* ((keyword (caadr exp))
          (transformer (execute
                        (expand scheme-syntactic-environment
                                `(lambda ,(cdadr exp)
                                   ,(caddr exp)))))
-         (expander (lambda (syntactic-env exp)
+         (expander (lambda (env exp)
                      (make-syntactic-closure
-                      with-macro-syntactic-env '()
+                      with-macro-env '()
                       (apply transformer
                              (make-syntactic-closure-list
-                              syntactic-env '()
+                              env '()
                               (cdr exp)))))))
     (make-syntactic-closure scheme-syntactic-environment '()
                             `(begin
                                ,@(make-syntactic-closure-list
                                   (extend-syntactic-environment
-                                   with-macro-syntactic-env
+                                   with-macro-env
                                    keyword
                                    expander)
                                   '()
                                   (cdddr exp))))))
 
-(define (with-macro-rec-expander with-macro-syntactic-env exp)
+(define (with-macro-rec-expander with-macro-env exp)
   (let* ((keyword (caadr exp))
          (transformer (execute
                        (expand scheme-syntactic-environment
                                `(lambda ,(cdadr exp)
                                   ,(caddr exp)))))
-         (extended-syntactic-env #f)
-         (expander (lambda (syntactic-env exp)
+         (extended-env #f)
+         (expander (lambda (env exp)
                      (make-syntactic-closure
-                      extended-syntactic-env '()
+                      extended-env '()
                       (apply transformer
                              (make-syntactic-closure-list
-                              syntactic-env '()
+                              env '()
                               (cdr exp)))))))
-    (set! extended-syntactic-env
+    (set! extended-env
           (extend-syntactic-environment
-           with-macro-syntactic-env
+           with-macro-env
            keyword
            expander))
     (make-syntactic-closure scheme-syntactic-environment '()
                             `(begin
                                ,@(make-syntactic-closure-list
-                                  extended-syntactic-env '()
+                                  extended-env '()
                                   (cdddr exp))))))
 
-(define (quasiquote-expander syntactic-env exp)
+(define (quasiquote-expander env exp)
   (define (mse expr)
-    (make-syntactic-closure syntactic-env '()
+    (make-syntactic-closure env '()
                             expr))
   (let* ((body (cadr exp)))
     (make-syntactic-closure
@@ -284,9 +284,9 @@
             body)))))
 
 (define scheme-syntactic-environment
-  (foldl (lambda (expander syntactic-env)
+  (foldl (lambda (expander env)
            (extend-syntactic-environment
-            syntactic-env
+            env
             (car expander)
             (cadr expander)))
          core-syntactic-environment
