@@ -7,64 +7,6 @@
    (string-append (symbol->string root)
                   (number->string *gensym-counter*))))
 
-;; An interpreter for with-macro:
-
-(define (execute exp env)
-  (cond ((syntactic-closure? exp)
-         (make-syntactic-closure (syntactic-closure-env exp)
-                                 (syntactic-closure-free-names exp)
-                                 (execute (syntactic-closure-exp exp)
-                                          env)))
-        ((symbol? exp)
-         (let ((def (syntactic-environment-def env exp)))
-           (if (and def
-                    (not (expander? (cdr def))))
-               (cdr def)
-               (error "Undefined variable" exp))))
-        ((not (pair? exp))
-         exp)
-        (else (case (car exp)
-                ((quote)
-                 (cadr exp))
-                ((if)
-                 (if (execute (cadr exp) env)
-                     (execute (caddr exp) env)
-                     (execute (cadddr exp) env)))
-                ((begin)
-                 (last (map (lambda (expr)
-                              (execute expr env))
-                            (cdr exp))))
-                ((lambda)
-                 (let ((formals (cadr exp))
-                       (body (cddr exp)))
-                   (lambda args
-                     (if (equal? (length args)
-                                 (length formals))
-                         (let ((extended-env (foldl (lambda (binding env)
-                                                      (extend-syntactic-environment env (car binding) (cdr binding)))
-                                                    env
-                                                    (map cons
-                                                         formals
-                                                         args))))
-                           (last (map (lambda (expr)
-                                        (execute expr extended-env))
-                                      body)))
-                         (error "Arity mismatch" (length args))))))
-                (else
-                 (apply (execute (car exp) env)
-                        (map (lambda (arg)
-                               (execute arg env))
-                             (cdr exp))))))))
-
-(define core-interpretation-environment
-  (list (cons 'cons cons)
-        (cons 'car car)
-        (cons 'cdr 'cdr)
-        (cons 'list list)
-        (cons 'cadr cadr)
-        (cons 'cddr cddr)
-        (cons 'make-syntactic-closure make-syntactic-closure)))
-
 ;; Syntactic closures:
 
 (define-struct syntactic-closure (env free-names exp) #:transparent)
@@ -93,6 +35,13 @@
                                            (cdr identifiers))
                       (car identifiers))))
 
+(define (identifier=? env1 id1 env2 id2)
+  (let ((first (syntactic-environment-def env1 id1))
+        (second (syntactic-environment-def env2 id2)))
+    (and first
+         second
+         (equal? first second))))
+
 (define (filter-syntactic-environment names names-syntactic-env else-syntactic-env)
   (append (filter (lambda (expander)
                     (memq (car expander) names))
@@ -101,6 +50,96 @@
 
 (define (syntactic-environment-def env keyword)
   (assoc keyword env))
+
+;; Interpreter:
+
+(define (execute exp env)
+  (cond ((syntactic-closure? exp)
+         (make-syntactic-closure (syntactic-closure-env exp)
+                                 (syntactic-closure-free-names exp)
+                                 (execute (syntactic-closure-exp exp)
+                                          env)))
+        ((symbol? exp)
+         (let ((def (syntactic-environment-def env exp)))
+           (if (and def
+                    (not (expander? (cdr def))))
+               (cdr def)
+               (error "Undefined variable" exp))))
+        ((not (pair? exp))
+         exp)
+        (else (case (car exp)
+                ((quote)
+                 (cadr exp))
+                ((if)
+                 (if (execute (cadr exp) env)
+                     (execute (caddr exp) env)
+                     (execute (cadddr exp) env)))
+                ((begin)
+                 (last (map (lambda (expr)
+                              (execute expr env))
+                            (cdr exp))))
+                ((set!)
+                 (let ((def (syntactic-environment-def env (cadr exp))))
+                   (if def
+                       (set-cdr! def (execute (caddr exp) env))
+                       (error "Undefined variable" (cadr exp)))))
+                ((lambda)
+                 (let ((formals (cadr exp))
+                       (body (cddr exp)))
+                   (lambda args
+                     (if (equal? (length args)
+                                 (length formals))
+                         (let ((extended-env (foldl (lambda (binding env)
+                                                      (extend-syntactic-environment env (car binding) (cdr binding)))
+                                                    env
+                                                    (map cons
+                                                         formals
+                                                         args))))
+                           (last (map (lambda (expr)
+                                        (execute expr extended-env))
+                                      body)))
+                         (error "Arity mismatch" (length args))))))
+                (else
+                 (apply (execute (car exp) env)
+                        (map (lambda (arg)
+                               (execute arg env))
+                             (cdr exp))))))))
+
+(define (sc-macro-transformer f)
+  (lambda (expr use-env def-env)
+    (make-syntactic-closure def-env '() (f expr def-env))))
+
+(define (rsc-macro-transformer f)
+  (lambda (expr use-env def-env)
+    (f expr def-env)))
+
+(define (er-macro-transformer f)
+  (lambda (expr use-env def-env)
+    (let ((renames '()))
+      (f expr
+         (lambda (identifier)
+           (let ((renamed (assq identifier renames)))
+             (if renamed
+                 (cdr renamed)
+                 (let ((name (make-syntactic-closure def-env '() identifier)))
+                   (set! renames (cons (cons identifier name)))
+                   name))))
+         (lambda (x y)
+           (identifier=? use-env x use-env y))))))
+
+(define core-interpretation-environment
+  (list (cons 'null? null?)
+        (cons 'cons cons)
+        (cons 'car car)
+        (cons 'cdr 'cdr)
+        (cons 'list list)
+        (cons 'cadr cadr)
+        (cons 'cddr cddr)
+        (cons 'make-syntactic-closure make-syntactic-closure)
+        (cons 'identifier=? identifier=?)
+        (cons 'sc-macro-transformer sc-macro-transformer)
+        (cons 'rsc-macro-transformer rsc-macro-transformer)
+        (cons 'er-macro-transformer er-macro-transformer)))
 
 ;; Macro-expansion:
 
