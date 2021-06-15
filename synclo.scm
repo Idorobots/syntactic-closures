@@ -9,8 +9,61 @@
 
 ;; An interpreter for with-macro:
 
-(define (execute code)
-  (eval code))
+(define (execute exp env)
+  (cond ((syntactic-closure? exp)
+         (make-syntactic-closure (syntactic-closure-env exp)
+                                 (syntactic-closure-free-names exp)
+                                 (execute (syntactic-closure-exp exp)
+                                          env)))
+        ((symbol? exp)
+         (let ((def (syntactic-environment-def env exp)))
+           (if (and def
+                    (not (expander? (cdr def))))
+               (cdr def)
+               (error "Undefined variable" exp))))
+        ((not (pair? exp))
+         exp)
+        (else (case (car exp)
+                ((quote)
+                 (cadr exp))
+                ((if)
+                 (if (execute (cadr exp) env)
+                     (execute (caddr exp) env)
+                     (execute (cadddr exp) env)))
+                ((begin)
+                 (last (map (lambda (expr)
+                              (execute expr env))
+                            (cdr exp))))
+                ((lambda)
+                 (let ((formals (cadr exp))
+                       (body (cddr exp)))
+                   (lambda args
+                     (if (equal? (length args)
+                                 (length formals))
+                         (let ((extended-env (foldl (lambda (binding env)
+                                                      (extend-syntactic-environment env (car binding) (cdr binding)))
+                                                    env
+                                                    (map cons
+                                                         formals
+                                                         args))))
+                           (last (map (lambda (expr)
+                                        (execute expr extended-env))
+                                      body)))
+                         (error "Arity mismatch" (length args))))))
+                (else
+                 (apply (execute (car exp) env)
+                        (map (lambda (arg)
+                               (execute arg env))
+                             (cdr exp))))))))
+
+(define core-interpretation-environment
+  (list (cons 'cons cons)
+        (cons 'car car)
+        (cons 'cdr 'cdr)
+        (cons 'list list)
+        (cons 'cadr cadr)
+        (cons 'cddr cddr)
+        (cons 'make-syntactic-closure make-syntactic-closure)))
 
 ;; Syntactic closures:
 
@@ -235,7 +288,8 @@
            (transformer (execute
                          (expand def-env
                                  `(lambda ,(cdadr exp)
-                                    ,(caddr exp)))))
+                                    ,(caddr exp)))
+                         core-interpretation-environment))
            (expander (make-expander with-macro-env
                                     (lambda (exp env def-env)
                                       (make-syntactic-closure
@@ -260,7 +314,8 @@
            (transformer (execute
                          (expand def-env
                                  `(lambda ,(cdadr exp)
-                                    ,(caddr exp)))))
+                                    ,(caddr exp)))
+                         core-interpretation-environment))
            (extended-env #f)
            (expander (make-expander extended-env
                                     (lambda (exp env def-env)
