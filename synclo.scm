@@ -143,7 +143,7 @@
 
 ;; Macro-expansion:
 
-(define (expand env exp)
+(define (expand env exp cont)
   ((cond ((syntactic-closure? exp) expand-syntactic-closure)
          ((symbol? exp) expand-symbol)
          ((not (pair? exp)) expand-constant)
@@ -153,67 +153,83 @@
                  ((lambda) expand-lambda)
                  (else expand-application))))
    env
-   exp))
+   exp
+   cont))
 
-(define (expand-list env exps)
-  (map (lambda (exp)
-         (expand env exp))
-       exps))
+(define (expand-constant env exp cont)
+  (cont env exp))
 
-(define (expand-symbol env exp)
+(define (expand-quote env exp cont)
+  (cont env
+        (if (syntactic-closure? (cadr exp))
+            `(quote ,(syntactic-closure-exp (cadr exp)))
+            exp)))
+
+(define (expand-free-variable env exp cont)
+  (cont env exp))
+
+(define (expand-symbol env exp cont)
   (let ((def (syntactic-environment-def env exp)))
     (if def
         (if (expander? (cdr def))
             ;; FIXME Should this expand symbols here?
-            (expand-expander (cdr def) env exp)
-            (cdr def))
-        (expand-free-variable env exp))))
+            (expand-expander (cdr def) env exp cont)
+            (cont env (cdr def)))
+        (expand-free-variable env exp cont))))
 
-(define (expand-application env exp)
+(define (expand-application env exp cont)
   (let* ((op (car exp))
          (def (syntactic-environment-def env op)))
     (if def
         (if (expander? (cdr def))
-            (expand-expander (cdr def) env exp)
+            (expand-expander (cdr def) env exp cont)
             ;; NOTE Originally the cdr is expanded in the outer env.
-            (expand-combination env exp))
-        (expand-combination env exp))))
+            (expand-combination env exp cont))
+        (expand-combination env exp cont))))
 
-(define (expand-expander expander env exp)
+(define (expand-expander expander env exp cont)
   ;; FIXME This now matches the behaviour from the original paper. Not sure if this is desirable.
   (let ((value ((expander-proc expander) exp env (expander-env expander))))
     (if (syntactic-closure? value)
-        (expand-syntactic-closure env value)
-        (error "Unescaped value" exp))))
+        (expand-syntactic-closure env value cont)
+        (error "Unescaped value" value))))
 
-(define (expand-constant env exp)
-  exp)
+(define (expand-combination env exp cont)
+  (expand-list env exp
+               (lambda (env expanded)
+                 (cont env `(,@expanded)))))
 
-(define (expand-quote env exp)
-  (if (syntactic-closure? (cadr exp))
-      `(quote ,(syntactic-closure-exp (cadr exp)))
-      exp))
+(define (expand-simple env exp cont)
+  (expand-list env (cdr exp)
+               (lambda (env expanded)
+                 (cont env `(,(car exp) ,@expanded)))))
 
-(define (expand-free-variable env exp)
-  exp)
-
-(define (expand-combination env exp)
-  `(,@(expand-list env exp)))
-
-(define (expand-simple env exp)
-  `(,(car exp) ,@(expand-list env (cdr exp))))
-
-(define (expand-lambda env exp)
+(define (expand-lambda env exp cont)
   (let ((env (add-identifier-list env
                                   (cadr exp))))
-    `(lambda ,(expand-list env (cadr exp))
-       ,@(expand-list env (cddr exp)))))
+    (expand-list env (cadr exp)
+                 (lambda (env formals)
+                   (expand-list env (cddr exp)
+                                (lambda (env body)
+                                  (cont env
+                                        `(lambda ,formals
+                                           ,@body))))))))
 
-(define (expand-syntactic-closure free-names-syntactic-env exp)
+(define (expand-syntactic-closure free-names-syntactic-env exp cont)
   (expand (filter-syntactic-environment (syntactic-closure-free-names exp)
                                         free-names-syntactic-env
                                         (syntactic-closure-env exp))
-          (syntactic-closure-exp exp)))
+          (syntactic-closure-exp exp)
+          cont))
+
+(define (expand-list env exps cont)
+  (define (expand-list-aux env acc exps cont)
+    (if (null? exps)
+        (cont env (reverse acc))
+        (expand env (car exps)
+                (lambda (env expanded)
+                  (expand-list-aux env (cons expanded acc) (cdr exps) cont)))))
+  (expand-list-aux env '() exps cont))
 
 ;; Expanders:
 
@@ -321,13 +337,17 @@
                                                                   (cadr exp))))
                                ,(process-case-clauses env (cddr exp))))))
 
+(define (expanded-value env val)
+  val)
+
 (define with-macro-expander
   (lambda (exp with-macro-env def-env)
     (let* ((keyword (caadr exp))
            (transformer (execute
                          (expand def-env
                                  `(lambda ,(cdadr exp)
-                                    ,(caddr exp)))
+                                    ,(caddr exp))
+                                 expanded-value)
                          core-interpretation-environment))
            (expander (make-expander with-macro-env
                                     (lambda (exp env def-env)
@@ -353,7 +373,8 @@
            (transformer (execute
                          (expand def-env
                                  `(lambda ,(cdadr exp)
-                                    ,(caddr exp)))
+                                    ,(caddr exp))
+                                 expanded-value)
                          core-interpretation-environment))
            (extended-env #f)
            (expander (make-expander extended-env
@@ -466,4 +487,5 @@
                        (lambda (let*)
                          (let ((a b))
                            c)))
-           (display `(list ,(+ 2 2) "wut"))))
+           (display `(list ,(+ 2 2) "wut")))
+        expanded-value)
