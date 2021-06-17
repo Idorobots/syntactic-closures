@@ -35,12 +35,19 @@
                                            (cdr identifiers))
                       (car identifiers))))
 
+(define (expanded-value env val)
+  val)
+
+(define (identifier? id)
+  (or (symbol? id)
+      (and (syntactic-closure? id)
+           (identifier? (syntactic-closure-exp id)))))
+
 (define (identifier=? env1 id1 env2 id2)
-  (let ((first (syntactic-environment-def env1 id1))
-        (second (syntactic-environment-def env2 id2)))
-    (and first
-         second
-         (equal? first second))))
+  (and (identifier? id1)
+       (identifier? id2)
+       (equal? (expand env1 id1 expanded-value)
+               (expand env2 id2 expanded-value))))
 
 (define (filter-syntactic-environment names names-syntactic-env else-syntactic-env)
   (append (filter (lambda (expander)
@@ -73,7 +80,9 @@
                 ((if)
                  (if (execute (cadr exp) env)
                      (execute (caddr exp) env)
-                     (execute (cadddr exp) env)))
+                     (if (= (length exp) 4)
+                         (execute (cadddr exp) env)
+                         (when #f #f))))
                 ((begin)
                  (last (map (lambda (expr)
                               (execute expr env))
@@ -123,13 +132,15 @@
              (if renamed
                  (cdr renamed)
                  (let ((name (make-syntactic-closure def-env '() identifier)))
-                   (set! renames (cons (cons identifier name)))
+                   (set! renames (cons (cons identifier name)
+                                       renames))
                    name))))
          (lambda (x y)
            (identifier=? use-env x use-env y))))))
 
 (define core-interpretation-environment
   (list (cons 'null? null?)
+        (cons 'pair? pair?)
         (cons 'cons cons)
         (cons 'car car)
         (cons 'cdr cdr)
@@ -138,7 +149,9 @@
         (cons 'caddr caddr)
         (cons 'cddr cddr)
         (cons 'cdddr cdddr)
+        (cons 'error error)
         (cons 'make-syntactic-closure make-syntactic-closure)
+        (cons 'identifier? identifier?)
         (cons 'identifier=? identifier=?)
         (cons 'sc-macro-transformer sc-macro-transformer)
         (cons 'rsc-macro-transformer rsc-macro-transformer)
@@ -182,7 +195,10 @@
 
 (define (expand-application env exp cont)
   (let* ((op (car exp))
-         (def (syntactic-environment-def env op)))
+         (def (if (syntactic-closure? op)
+                  (syntactic-environment-def (syntactic-closure-env op)
+                                             (syntactic-closure-exp op))
+                  (syntactic-environment-def env op))))
     (if def
         (if (expander? (cdr def))
             (expand-expander (cdr def) env exp cont)
@@ -191,11 +207,10 @@
         (expand-combination env exp cont))))
 
 (define (expand-expander expander env exp cont)
-  ;; FIXME This now matches the behaviour from the original paper. Not sure if this is desirable.
-  (let ((value ((expander-proc expander) exp env (expander-env expander))))
-    (if (syntactic-closure? value)
-        (expand-syntactic-closure env value cont)
-        (error "Unescaped value" value))))
+  ;; NOTE The original paper implementation requires the expanded value to be a syntactic closure.
+  (expand env
+          ((expander-proc expander) exp env (expander-env expander))
+          cont))
 
 (define (expand-combination env exp cont)
   (expand-list env exp
@@ -289,34 +304,6 @@
                                             temp
                                             (or ,@(cdr operands))))))))))
 
-(define cond-expander
-  (lambda (exp env def-env)
-    (define (process-cond-clauses env clauses)
-      (let ((body (make-syntactic-closure-list env '() (cdar clauses))))
-        (cond ((not (null? (cdr clauses)))
-               (let ((test (make-syntactic-closure
-                            env '()
-                            (caar clauses)))
-                     (rest (process-cond-clauses env
-                                                 (cdr clauses))))
-                 (if (null? body)
-                     `(or ,test ,rest)
-                     `(if ,test
-                          (begin ,@body)
-                          ,rest))))
-              ((eq? (caar clauses) 'else)
-               `(begin ,@body))
-              (else
-               (let ((test (make-syntactic-closure
-                            env '()
-                            (caar clauses))))
-                 (if (null? body)
-                     test
-                     `(if ,test
-                          (begin ,@body))))))))
-    (make-syntactic-closure def-env '()
-                            (process-cond-clauses env (cdr exp)))))
-
 (define case-expander
   (lambda (exp env def-env)
     (define (process-case-clauses env clauses)
@@ -339,9 +326,6 @@
                             `(let ((temp ,(make-syntactic-closure env '()
                                                                   (cadr exp))))
                                ,(process-case-clauses env (cddr exp))))))
-
-(define (expanded-value env val)
-  val)
 
 (define define-syntax-expander
   (lambda (exp with-macro-env def-env)
@@ -394,7 +378,6 @@
                (list 'or or-expander)
                (list 'and and-expander)
                (list 'let let-expander)
-               (list 'cond cond-expander)
                (list 'case case-expander)
                (list 'quasiquote quasiquote-expander))))
 
@@ -409,6 +392,32 @@
 
 (expand scheme-syntactic-environment
         '(begin
+           ;; Some of these macros were taken from the great Chibi Scheme implementation.
+           ;; Copyright (c) 2009-2012 Alex Shinn.  All rights reserved.
+           ;; BSD-style license: http://synthcode.com/license.txt
+           (define-syntax cond
+             (er-macro-transformer
+              (lambda (expr rename compare)
+                (if (null? (cdr expr))
+                    (if #f #f)
+                    ((lambda (cl)
+                       (if (compare (rename 'else) (car cl))
+                           (if (pair? (cddr expr))
+                               (error "non-final else in cond" expr)
+                               (cons (rename 'begin) (cdr cl)))
+                           (if (if (null? (cdr cl)) #t (compare (rename '=>) (cadr cl)))
+                               (list (list (rename 'lambda) (list (rename 'tmp))
+                                           (list (rename 'if) (rename 'tmp)
+                                                 (if (null? (cdr cl))
+                                                     (rename 'tmp)
+                                                     (list (car (cddr cl)) (rename 'tmp)))
+                                                 (cons (rename 'cond) (cddr expr))))
+                                     (car cl))
+                               (list (rename 'if)
+                                     (car cl)
+                                     (cons (rename 'begin) (cdr cl))
+                                     (cons (rename 'cond) (cddr expr))))))
+                     (cadr expr))))))
            (cond ((or (something? x)
                       (something-else? y))
                   do this stuff)
