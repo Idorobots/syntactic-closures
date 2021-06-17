@@ -75,8 +75,8 @@
   (let ((def (environment-def env exp)))
     (if def
         (if (expander? (cdr def))
-            ;; FIXME Should this expand symbols here?
-            (expand-expander (cdr def) env exp cont)
+            ;; FIXME Could this allow for symbol expansion?
+            (expand-free-variable env exp cont)
             (cont env (cdr def)))
         (expand-free-variable env exp cont))))
 
@@ -281,6 +281,18 @@
        (equal? (expand env1 id1 resulting-value)
                (expand env2 id2 resulting-value))))
 
+(define (every pred list)
+  (if (null? list)
+      #t
+      (and (pred (car list))
+           (every pred (cdr list)))))
+
+(define (some pred list)
+  (if (null? list)
+      #f
+      (or (pred (car list))
+          (some pred (cdr list)))))
+
 (define (sc-macro-transformer f)
   (lambda (expr use-env def-env)
     (make-syntactic-closure def-env '()
@@ -313,16 +325,35 @@
         (cons 'car car)
         (cons 'cdr cdr)
         (cons 'list list)
+        (cons 'length length)
+        (cons 'caar caar)
+        (cons 'cdar cdar)
         (cons 'cadr cadr)
         (cons 'caddr caddr)
         (cons 'cddr cddr)
         (cons 'cdddr cdddr)
-        (cons 'memv memv)
         (cons 'eqv? eqv?)
+        (cons 'eq? eq?)
+        (cons 'equal? equal?)
+        (cons 'memv memv)
+        (cons 'every every)
+        (cons 'some some)
+        (cons 'map map)
+        (cons 'filter filter)
+        (cons 'foldl foldl)
+        (cons 'vector vector)
+        (cons 'vector? vector?)
+        (cons 'list->vector list->vector)
+        (cons 'vector->list vector->list)
         (cons '+ +)
         (cons '- -)
         (cons '* *)
         (cons '/ /)
+        (cons '= =)
+        (cons '< <)
+        (cons '> >)
+        (cons '<= <=)
+        (cons '>= >=)
         (cons 'error error)
         (cons 'make-syntactic-closure make-syntactic-closure)
         (cons 'identifier? identifier?)
@@ -334,51 +365,6 @@
 ;; Expanders:
 
 (define-struct expander ((env #:mutable) proc))
-
-(define let-expander
-  (lambda (exp env def-env cont)
-    (let ((identifiers (map car (cadr exp))))
-      (cont env
-            (make-syntactic-closure def-env '()
-                                    `((lambda ,identifiers
-                                        ,@(make-syntactic-closure-list
-                                           env identifiers
-                                           (cddr exp)))
-                                      ,@(make-syntactic-closure-list
-                                         env '()
-                                         (map cadr (cadr exp)))))))))
-
-(define delay-expander
-  (lambda (exp env def-env cont)
-    (let ((delayed (make-syntactic-closure env '()
-                                           (cadr exp))))
-      (cont env
-            (make-syntactic-closure def-env '()
-                                    `(make-promise (lambda () ,delayed)))))))
-
-(define case-expander
-  (lambda (exp env def-env cont)
-    (define (process-case-clauses env clauses)
-      (let ((data (caar clauses))
-            (body (make-syntactic-closure-list
-                   env '()
-                   (cdar clauses))))
-        (cond ((not (null? (cdr clauses)))
-               (let ((rest (process-case-clauses
-                            env (cdr clauses))))
-                 `(if (memv temp ',data)
-                      (begin ,@body)
-                      ,rest)))
-              ((eq? data 'else)
-               `(begin ,@body))
-              (else
-               `(if (memv temp ',data)
-                    (begin ,@body))))))
-    (cont env
-          (make-syntactic-closure def-env '()
-                                  `(let ((temp ,(make-syntactic-closure env '()
-                                                                        (cadr exp))))
-                                     ,(process-case-clauses env (cddr exp)))))))
 
 (define define-syntax-expander
   (lambda (exp define-syntax-env def-env cont)
@@ -403,50 +389,24 @@
       (cont extended-env
             (when #f #f)))))
 
-(define quasiquote-expander
-  (lambda (exp env def-env cont)
-    (define (mse expr)
-      (make-syntactic-closure env '()
-                              expr))
-    (let* ((body (cadr exp)))
-      (cont env
-            (make-syntactic-closure
-             def-env '()
-             (cond ((or (null? body)
-                        (symbol? body))
-                    `(quote ,(mse body)))
-                   ((and (pair? body)
-                         (eq? (car body) 'unquote))
-                    (mse (cadr body)))
-                   ((pair? body)
-                    `(cons
-                      ,(mse (list 'quasiquote (car body)))
-                      ,(mse (list 'quasiquote (cdr body)))))
-                   (else
-                    body)))))))
-
 ;; Global syntactic env:
 
 (define scheme-environment
-  (foldl (lambda (expander env)
-           (extend-environment
-            env
-            (car expander)
-            (make-expander #f ;; NOTE This will be adjusted shortly.
-                           (cadr expander))))
-         core-environment
-         (list (list 'define-syntax define-syntax-expander)
-               (list 'delay delay-expander)
-               (list 'let let-expander)
-               (list 'case case-expander)
-               (list 'quasiquote quasiquote-expander))))
-
-(map (lambda (b)
-       (if (expander? (cdr b))
-           (set-expander-env! (cdr b)
-                              scheme-environment)
-           b))
-     scheme-environment)
+  (let ((env (foldl (lambda (expander env)
+                      (extend-environment
+                       env
+                       (car expander)
+                       (make-expander #f ;; NOTE This will be adjusted shortly.
+                                      (cadr expander))))
+                    core-environment
+                    (list (list 'define-syntax define-syntax-expander)))))
+    (map (lambda (b)
+           (if (expander? (cdr b))
+               (set-expander-env! (cdr b)
+                                  env)
+               b))
+         env)
+    env))
 
 ;; Example:
 
@@ -479,6 +439,105 @@
                                       (cons (rename 'begin) (cdr cl))
                                       (cons (rename 'cond) (cddr expr))))))
                       (cadr expr))))))
+            (define-syntax and
+              (er-macro-transformer
+               (lambda (expr rename compare)
+                 (cond ((null? (cdr expr)))
+                       ((null? (cddr expr)) (cadr expr))
+                       (else (list (rename 'if) (cadr expr)
+                                   (cons (rename 'and) (cddr expr))
+                                   #f))))))
+            (define-syntax quasiquote
+              (er-macro-transformer
+               (lambda (expr rename compare)
+                 (define qq
+                   (lambda (x d)
+                     (cond
+                      ((pair? x)
+                       (cond
+                        ((compare (rename 'unquote) (car x))
+                         (if (<= d 0)
+                             (cadr x)
+                             (list (rename 'list) (list (rename 'quote) 'unquote)
+                                   (qq (cadr x) (- d 1)))))
+                        ((compare (rename 'unquote-splicing) (car x))
+                         (if (<= d 0)
+                             (list (rename 'cons) (qq (car x) d) (qq (cdr x) d))
+                             (list (rename 'list) (list (rename 'quote) 'unquote-splicing)
+                                   (qq (cadr x) (- d 1)))))
+                        ((compare (rename 'quasiquote) (car x))
+                         (list (rename 'list) (list (rename 'quote) 'quasiquote)
+                               (qq (cadr x) (+ d 1))))
+                        ((and (<= d 0) (pair? (car x))
+                              (compare (rename 'unquote-splicing) (caar x)))
+                         (if (null? (cdr x))
+                             (cadr (car x))
+                             (list (rename 'append) (cadr (car x)) (qq (cdr x) d))))
+                        (else
+                         (list (rename 'cons) (qq (car x) d) (qq (cdr x) d)))))
+                      ((vector? x) (list (rename 'list->vector) (qq (vector->list x) d)))
+                      ((if (identifier? x) #t (null? x)) (list (rename 'quote) x))
+                      (else x))))
+                 (qq (cadr expr) 0))))
+            (define-syntax case
+              (er-macro-transformer
+               (lambda (expr rename compare)
+                 (define body
+                   (lambda (exprs)
+                     (cond
+                      ((null? exprs)
+                       (rename 'tmp))
+                      ((compare (rename '=>) (car exprs))
+                       `(,(cadr exprs) ,(rename 'tmp)))
+                      (else
+                       `(,(rename 'begin) ,@exprs)))))
+                 (define clause
+                   (lambda (ls)
+                     (cond
+                      ((null? ls) #f)
+                      ((compare (rename 'else) (caar ls))
+                       (body (cdar ls)))
+                      ((and (pair? (car (car ls))) (null? (cdr (car (car ls)))))
+                       `(,(rename 'if) (,(rename 'eqv?) ,(rename 'tmp)
+                                        (,(rename 'quote) ,(car (caar ls))))
+                         ,(body (cdar ls))
+                         ,(clause (cdr ls))))
+                      (else
+                       `(,(rename 'if) (,(rename 'memv) ,(rename 'tmp)
+                                        (,(rename 'quote) ,(caar ls)))
+                         ,(body (cdar ls))
+                         ,(clause (cdr ls)))))))
+                 `(let ((,(rename 'tmp) ,(cadr expr)))
+                    ,(clause (cddr expr))))))
+            (define-syntax let
+              (er-macro-transformer
+               (lambda (expr rename compare)
+                 (if (null? (cdr expr)) (error "empty let" expr))
+                 (if (null? (cddr expr)) (error "no let body" expr))
+                 ((lambda (bindings)
+                    (if (list? bindings)
+                        #f
+                        (error "bad let bindings"))
+                    (if (every (lambda (x)
+                                 (if (pair? x)
+                                     (if (pair? (cdr x))
+                                         (null? (cddr x))
+                                         #f)
+                                     #f))
+                               bindings)
+                        ((lambda (vars vals)
+                           (if (identifier? (cadr expr))
+                               `((,(rename 'lambda) ,vars
+                                  (,(rename 'letrec) ((,(cadr expr)
+                                                       (,(rename 'lambda) ,vars
+                                                        ,@(cdr (cddr expr)))))
+                                   (,(cadr expr) ,@vars)))
+                                 ,@vals)
+                               `((,(rename 'lambda) ,vars ,@(cddr expr)) ,@vals)))
+                         (map car bindings)
+                         (map cadr bindings))
+                        (error "bad let syntax" expr)))
+                  (if (identifier? (cadr expr)) (car (cddr expr)) (cadr expr))))))
             (define-syntax or
               (er-macro-transformer
                (lambda (expr rename compare)
@@ -489,14 +548,6 @@
                               (list (rename 'if) (rename 'tmp)
                                     (rename 'tmp)
                                     (cons (rename 'or) (cddr expr)))))))))
-            (define-syntax and
-              (er-macro-transformer
-               (lambda (expr rename compare)
-                 (cond ((null? (cdr expr)))
-                       ((null? (cddr expr)) (cadr expr))
-                       (else (list (rename 'if) (cadr expr)
-                                   (cons (rename 'and) (cddr expr))
-                                   #f))))))
             ;; Some tests for the macros.
             (cond ((or (something? x)
                        (something-else? y))
