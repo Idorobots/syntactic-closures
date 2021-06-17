@@ -95,8 +95,12 @@
 
 (define (expand-expander expander env exp cont)
   ;; NOTE The original paper implementation requires the expanded value to be a syntactic closure.
-  ;; FIXME Should expander also receive the continuation?
-  (expand env ((expander-proc expander) exp env (expander-env expander)) cont))
+  ((expander-proc expander)
+   exp
+   env
+   (expander-env expander)
+   (lambda (env expanded)
+     (expand env expanded cont))))
 
 (define (expand-combination env exp cont)
   (expand-list env exp
@@ -127,24 +131,17 @@
                                         use-env
                                         (syntactic-closure-env exp))
           (syntactic-closure-exp exp)
-          cont))
+          (lambda (env expanded)
+            (cont use-env
+                  expanded))))
 
 (define (expand-list env exps cont)
   (define (expand-list-aux env-acc acc exps cont)
     (if (null? exps)
         (cont env-acc (reverse acc))
         (expand env-acc (car exps)
-                (lambda (new-env-acc expanded)
-                  (expand-list-aux
-                   ;; FIXME Nasty hack to prevent unwanted closures leaking static envs.
-                   ;; FIXME define-syntax returns a syntactic-closure with the new macro definition,
-                   ;; FIXME so we need to thread this through the rest of the expressions.
-                   (if (void? expanded)
-                       new-env-acc
-                       env-acc)
-                   (cons expanded acc)
-                   (cdr exps)
-                   cont)))))
+                (lambda (env-acc expanded)
+                  (expand-list-aux env-acc (cons expanded acc) (cdr exps) cont)))))
   (expand-list-aux env '() exps cont))
 
 ;; Interpreter:
@@ -268,26 +265,28 @@
 (define-struct expander ((env #:mutable) proc))
 
 (define let-expander
-  (lambda (exp env def-env)
+  (lambda (exp env def-env cont)
     (let ((identifiers (map car (cadr exp))))
-      (make-syntactic-closure def-env '()
+      (cont env
+            (make-syntactic-closure def-env '()
                               `((lambda ,identifiers
                                   ,@(make-syntactic-closure-list
                                      env identifiers
                                      (cddr exp)))
                                 ,@(make-syntactic-closure-list
                                    env '()
-                                   (map cadr (cadr exp))))))))
+                                   (map cadr (cadr exp)))))))))
 
 (define delay-expander
-  (lambda (exp env def-env)
+  (lambda (exp env def-env cont)
     (let ((delayed (make-syntactic-closure env '()
                                            (cadr exp))))
-      (make-syntactic-closure def-env '()
-                              `(make-promise (lambda () ,delayed))))))
+      (cont env
+            (make-syntactic-closure def-env '()
+                              `(make-promise (lambda () ,delayed)))))))
 
 (define case-expander
-  (lambda (exp env def-env)
+  (lambda (exp env def-env cont)
     (define (process-case-clauses env clauses)
       (let ((data (caar clauses))
             (body (make-syntactic-closure-list
@@ -304,46 +303,54 @@
               (else
                `(if (memv temp ',data)
                     (begin ,@body))))))
-    (make-syntactic-closure def-env '()
+    (cont env
+          (make-syntactic-closure def-env '()
                             `(let ((temp ,(make-syntactic-closure env '()
                                                                   (cadr exp))))
-                               ,(process-case-clauses env (cddr exp))))))
+                               ,(process-case-clauses env (cddr exp)))))))
 
 (define define-syntax-expander
-  (lambda (exp define-syntax-env def-env)
+  (lambda (exp define-syntax-env def-env cont)
     (let* ((keyword (cadr exp))
            (transformer (execute
                          (expand define-syntax-env (caddr exp) expanded-value)
                          core-interpretation-environment))
            (expander (make-expander #f ;; NOTE This will be adjusted shortly.
-                                    transformer))
+                                    (lambda (exp use-env def-env cont)
+                                      ;; NOTE Use-defined macros canot introduce new definitions,
+                                      ;; NOTE unless they expand into a `define-syntax` call.
+                                      (cont use-env
+                                            (transformer exp use-env def-env)))))
            (extended-env (extend-syntactic-environment
                           define-syntax-env
                           keyword
                           expander)))
       (set-expander-env! expander extended-env)
-      (make-syntactic-closure extended-env '() (when #f #f)))))
+      ;; NOTE Continues expansion with the env extended with by the new macro definition.
+      (cont extended-env
+            (when #f #f)))))
 
 (define quasiquote-expander
-  (lambda (exp env def-env)
+  (lambda (exp env def-env cont)
     (define (mse expr)
       (make-syntactic-closure env '()
                               expr))
     (let* ((body (cadr exp)))
-      (make-syntactic-closure
-       def-env '()
-       (cond ((or (null? body)
-                  (symbol? body))
-              `(quote ,(mse body)))
-             ((and (pair? body)
-                   (eq? (car body) 'unquote))
-              (mse (cadr body)))
-             ((pair? body)
-              `(cons
-                ,(mse (list 'quasiquote (car body)))
-                ,(mse (list 'quasiquote (cdr body)))))
-             (else
-              body))))))
+      (cont env
+            (make-syntactic-closure
+             def-env '()
+             (cond ((or (null? body)
+                        (symbol? body))
+                    `(quote ,(mse body)))
+                   ((and (pair? body)
+                         (eq? (car body) 'unquote))
+                    (mse (cadr body)))
+                   ((pair? body)
+                    `(cons
+                      ,(mse (list 'quasiquote (car body)))
+                      ,(mse (list 'quasiquote (cdr body)))))
+                   (else
+                    body)))))))
 
 ;; Global syntactic env:
 
