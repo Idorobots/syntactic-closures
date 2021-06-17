@@ -18,15 +18,15 @@
 
 ;; Syntactic environments:
 
-(define core-syntactic-environment '())
+(define core-environment '())
 
-(define (extend-syntactic-environment outer-env keyword expander)
+(define (extend-environment outer-env keyword expander)
   (cons (cons keyword expander)
         outer-env))
 
 (define (add-identifier outer-env identifier)
   (let ((variable (gensym identifier)))
-    (extend-syntactic-environment outer-env identifier variable)))
+    (extend-environment outer-env identifier variable)))
 
 (define (add-identifier-list env identifiers)
   (if (null? identifiers)
@@ -35,13 +35,13 @@
                                            (cdr identifiers))
                       (car identifiers))))
 
-(define (filter-syntactic-environment names names-syntactic-env else-syntactic-env)
+(define (filter-environment names names-syntactic-env else-syntactic-env)
   (append (filter (lambda (expander)
                     (memq (car expander) names))
                   names-syntactic-env)
           else-syntactic-env))
 
-(define (syntactic-environment-def env keyword)
+(define (environment-def env keyword)
   (assoc keyword env))
 
 ;; Macro-expansion:
@@ -72,7 +72,7 @@
   (cont env exp))
 
 (define (expand-symbol env exp cont)
-  (let ((def (syntactic-environment-def env exp)))
+  (let ((def (environment-def env exp)))
     (if def
         (if (expander? (cdr def))
             ;; FIXME Should this expand symbols here?
@@ -83,9 +83,9 @@
 (define (expand-application env exp cont)
   (let* ((op (car exp))
          (def (if (syntactic-closure? op)
-                  (syntactic-environment-def (syntactic-closure-env op)
-                                             (syntactic-closure-exp op))
-                  (syntactic-environment-def env op))))
+                  (environment-def (syntactic-closure-env op)
+                                   (syntactic-closure-exp op))
+                  (environment-def env op))))
     (if def
         (if (expander? (cdr def))
             (expand-expander (cdr def) env exp cont)
@@ -127,9 +127,9 @@
                                          ,@body)))))))
 
 (define (expand-syntactic-closure use-env exp cont)
-  (expand (filter-syntactic-environment (syntactic-closure-free-names exp)
-                                        use-env
-                                        (syntactic-closure-env exp))
+  (expand (filter-environment (syntactic-closure-free-names exp)
+                              use-env
+                              (syntactic-closure-env exp))
           (syntactic-closure-exp exp)
           (lambda (env expanded)
             (cont use-env
@@ -148,15 +148,15 @@
 
 (define (execute env exp)
   ((cond ((syntactic-closure? exp) execute-syntactic-closure)
-        ((symbol? exp) execute-symbol)
-        ((not (pair? exp)) execute-constant)
-        (else (case (car exp)
-                ((quote) execute-quote)
-                ((if) execute-if)
-                ((begin) execute-begin)
-                ((set!) execute-set!)
-                ((lambda) execute-lambda)
-                (else execute-application))))
+         ((symbol? exp) execute-symbol)
+         ((not (pair? exp)) execute-constant)
+         (else (case (car exp)
+                 ((quote) execute-quote)
+                 ((if) execute-if)
+                 ((begin) execute-begin)
+                 ((set!) execute-set!)
+                 ((lambda) execute-lambda)
+                 (else execute-application))))
    env
    exp))
 
@@ -167,7 +167,7 @@
                                    (syntactic-closure-exp exp))))
 
 (define (execute-symbol env exp)
-  (let ((def (syntactic-environment-def env exp)))
+  (let ((def (environment-def env exp)))
     (if (and def
              (not (expander? (cdr def))))
         (cdr def)
@@ -192,7 +192,7 @@
              (cdr exp))))
 
 (define (execute-set! env exp)
-  (let ((def (syntactic-environment-def env (cadr exp))))
+  (let ((def (environment-def env (cadr exp))))
     (if def
         (set-cdr! def (execute env (caddr exp)))
         (error "Undefined variable" (cadr exp)))))
@@ -204,7 +204,7 @@
       (if (equal? (length args)
                   (length formals))
           (let ((extended-env (foldl (lambda (binding env)
-                                       (extend-syntactic-environment env (car binding) (cdr binding)))
+                                       (extend-environment env (car binding) (cdr binding)))
                                      env
                                      (map cons
                                           formals
@@ -289,13 +289,13 @@
     (let ((identifiers (map car (cadr exp))))
       (cont env
             (make-syntactic-closure def-env '()
-                              `((lambda ,identifiers
-                                  ,@(make-syntactic-closure-list
-                                     env identifiers
-                                     (cddr exp)))
-                                ,@(make-syntactic-closure-list
-                                   env '()
-                                   (map cadr (cadr exp)))))))))
+                                    `((lambda ,identifiers
+                                        ,@(make-syntactic-closure-list
+                                           env identifiers
+                                           (cddr exp)))
+                                      ,@(make-syntactic-closure-list
+                                         env '()
+                                         (map cadr (cadr exp)))))))))
 
 (define delay-expander
   (lambda (exp env def-env cont)
@@ -303,7 +303,7 @@
                                            (cadr exp))))
       (cont env
             (make-syntactic-closure def-env '()
-                              `(make-promise (lambda () ,delayed)))))))
+                                    `(make-promise (lambda () ,delayed)))))))
 
 (define case-expander
   (lambda (exp env def-env cont)
@@ -325,9 +325,9 @@
                     (begin ,@body))))))
     (cont env
           (make-syntactic-closure def-env '()
-                            `(let ((temp ,(make-syntactic-closure env '()
-                                                                  (cadr exp))))
-                               ,(process-case-clauses env (cddr exp)))))))
+                                  `(let ((temp ,(make-syntactic-closure env '()
+                                                                        (cadr exp))))
+                                     ,(process-case-clauses env (cddr exp)))))))
 
 (define define-syntax-expander
   (lambda (exp define-syntax-env def-env cont)
@@ -342,7 +342,7 @@
                                       ;; NOTE unless they expand into a `define-syntax` call.
                                       (cont use-env
                                             (transformer exp use-env def-env)))))
-           (extended-env (extend-syntactic-environment
+           (extended-env (extend-environment
                           define-syntax-env
                           keyword
                           expander)))
@@ -375,14 +375,14 @@
 
 ;; Global syntactic env:
 
-(define scheme-syntactic-environment
+(define scheme-environment
   (foldl (lambda (expander env)
-           (extend-syntactic-environment
+           (extend-environment
             env
             (car expander)
             (make-expander #f ;; NOTE This will be adjusted shortly.
                            (cadr expander))))
-         core-syntactic-environment
+         core-environment
          (list (list 'define-syntax define-syntax-expander)
                (list 'delay delay-expander)
                (list 'let let-expander)
@@ -392,102 +392,102 @@
 (map (lambda (b)
        (if (expander? (cdr b))
            (set-expander-env! (cdr b)
-                              scheme-syntactic-environment)
+                              scheme-environment)
            b))
-     scheme-syntactic-environment)
+     scheme-environment)
 
 ;; Example:
 
 (pretty-print
- (expand scheme-syntactic-environment
-        '(begin
-           ;; Some of these macros were taken from the great Chibi Scheme implementation.
-           ;; Copyright (c) 2009-2012 Alex Shinn.  All rights reserved.
-           ;; BSD-style license: http://synthcode.com/license.txt
-           (define-syntax cond
-             (er-macro-transformer
-              (lambda (expr rename compare)
-                (if (null? (cdr expr))
-                    (if #f #f)
-                    ((lambda (cl)
-                       (if (compare (rename 'else) (car cl))
-                           (if (pair? (cddr expr))
-                               (error "non-final else in cond" expr)
-                               (cons (rename 'begin) (cdr cl)))
-                           (if (if (null? (cdr cl)) #t (compare (rename '=>) (cadr cl)))
-                               (list (list (rename 'lambda) (list (rename 'tmp))
-                                           (list (rename 'if) (rename 'tmp)
-                                                 (if (null? (cdr cl))
-                                                     (rename 'tmp)
-                                                     (list (car (cddr cl)) (rename 'tmp)))
-                                                 (cons (rename 'cond) (cddr expr))))
-                                     (car cl))
-                               (list (rename 'if)
-                                     (car cl)
-                                     (cons (rename 'begin) (cdr cl))
-                                     (cons (rename 'cond) (cddr expr))))))
-                     (cadr expr))))))
-           (define-syntax or
-             (er-macro-transformer
-              (lambda (expr rename compare)
-                (cond ((null? (cdr expr)) #f)
-                      ((null? (cddr expr)) (cadr expr))
-                      (else
-                       (list (rename 'let) (list (list (rename 'tmp) (cadr expr)))
-                             (list (rename 'if) (rename 'tmp)
-                                   (rename 'tmp)
-                                   (cons (rename 'or) (cddr expr)))))))))
-           (define-syntax and
-             (er-macro-transformer
-              (lambda (expr rename compare)
-                (cond ((null? (cdr expr)))
-                      ((null? (cddr expr)) (cadr expr))
-                      (else (list (rename 'if) (cadr expr)
-                                  (cons (rename 'and) (cddr expr))
-                                  #f))))))
-           ;; Some tests for the macros.
-           (cond ((or (something? x)
-                      (something-else? y))
-                  do this stuff)
-                 ((otherwise?)
-                  (let ((x 23))
-                    (* x x)))
-                 (else
-                  23))
-           (case 23
-             ((23) #t)
-             ((5 7 13) 'nope)
-             (else
-              ':shrug:))
-           (lambda (let*)
-             (let ((a b))
-               c))
-           (lambda (let)
-             (let ((a b))
-               c))
-           (lambda (let)
-             (let* ((a b))
-               c))
-           (display `(list ,(+ 2 2) "wut"))
-           (define-syntax let
-             (sc-macro-transformer
-              (lambda (exp def-env)
-                `(begin
-                   (display "letting ")
-                   (display ',(cadr exp))
-                   (display " to do ")
-                   (display ',(caddr exp))
-                   (newline)))))
-           (lambda (let)
-             (let ((a b))
-               c))
-           (lambda (let*)
-             (let ((a b))
-               c))
-           (define-syntax foo
-             (sc-macro-transformer
-              (lambda (exp def-env)
-                `(+ ,(cadr exp)
-                    ,(caddr exp)))))
-           (foo 5 23))
-        resulting-value))
+ (expand scheme-environment
+         '(begin
+            ;; Some of these macros were taken from the great Chibi Scheme implementation.
+            ;; Copyright (c) 2009-2012 Alex Shinn.  All rights reserved.
+            ;; BSD-style license: http://synthcode.com/license.txt
+            (define-syntax cond
+              (er-macro-transformer
+               (lambda (expr rename compare)
+                 (if (null? (cdr expr))
+                     (if #f #f)
+                     ((lambda (cl)
+                        (if (compare (rename 'else) (car cl))
+                            (if (pair? (cddr expr))
+                                (error "non-final else in cond" expr)
+                                (cons (rename 'begin) (cdr cl)))
+                            (if (if (null? (cdr cl)) #t (compare (rename '=>) (cadr cl)))
+                                (list (list (rename 'lambda) (list (rename 'tmp))
+                                            (list (rename 'if) (rename 'tmp)
+                                                  (if (null? (cdr cl))
+                                                      (rename 'tmp)
+                                                      (list (car (cddr cl)) (rename 'tmp)))
+                                                  (cons (rename 'cond) (cddr expr))))
+                                      (car cl))
+                                (list (rename 'if)
+                                      (car cl)
+                                      (cons (rename 'begin) (cdr cl))
+                                      (cons (rename 'cond) (cddr expr))))))
+                      (cadr expr))))))
+            (define-syntax or
+              (er-macro-transformer
+               (lambda (expr rename compare)
+                 (cond ((null? (cdr expr)) #f)
+                       ((null? (cddr expr)) (cadr expr))
+                       (else
+                        (list (rename 'let) (list (list (rename 'tmp) (cadr expr)))
+                              (list (rename 'if) (rename 'tmp)
+                                    (rename 'tmp)
+                                    (cons (rename 'or) (cddr expr)))))))))
+            (define-syntax and
+              (er-macro-transformer
+               (lambda (expr rename compare)
+                 (cond ((null? (cdr expr)))
+                       ((null? (cddr expr)) (cadr expr))
+                       (else (list (rename 'if) (cadr expr)
+                                   (cons (rename 'and) (cddr expr))
+                                   #f))))))
+            ;; Some tests for the macros.
+            (cond ((or (something? x)
+                       (something-else? y))
+                   do this stuff)
+                  ((otherwise?)
+                   (let ((x 23))
+                     (* x x)))
+                  (else
+                   23))
+            (case 23
+              ((23) #t)
+              ((5 7 13) 'nope)
+              (else
+               ':shrug:))
+            (lambda (let*)
+              (let ((a b))
+                c))
+            (lambda (let)
+              (let ((a b))
+                c))
+            (lambda (let)
+              (let* ((a b))
+                c))
+            (display `(list ,(+ 2 2) "wut"))
+            (define-syntax let
+              (sc-macro-transformer
+               (lambda (exp def-env)
+                 `(begin
+                    (display "letting ")
+                    (display ',(cadr exp))
+                    (display " to do ")
+                    (display ',(caddr exp))
+                    (newline)))))
+            (lambda (let)
+              (let ((a b))
+                c))
+            (lambda (let*)
+              (let ((a b))
+                c))
+            (define-syntax foo
+              (sc-macro-transformer
+               (lambda (exp def-env)
+                 `(+ ,(cadr exp)
+                     ,(caddr exp)))))
+            (foo 5 23))
+         resulting-value))
