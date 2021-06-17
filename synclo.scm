@@ -35,20 +35,6 @@
                                            (cdr identifiers))
                       (car identifiers))))
 
-(define (expanded-value env val)
-  val)
-
-(define (identifier? id)
-  (or (symbol? id)
-      (and (syntactic-closure? id)
-           (identifier? (syntactic-closure-exp id)))))
-
-(define (identifier=? env1 id1 env2 id2)
-  (and (identifier? id1)
-       (identifier? id2)
-       (equal? (expand env1 id1 expanded-value)
-               (expand env2 id2 expanded-value))))
-
 (define (filter-syntactic-environment names names-syntactic-env else-syntactic-env)
   (append (filter (lambda (expander)
                     (memq (car expander) names))
@@ -57,105 +43,6 @@
 
 (define (syntactic-environment-def env keyword)
   (assoc keyword env))
-
-;; Interpreter:
-
-(define (execute exp env)
-  (cond ((syntactic-closure? exp)
-         (make-syntactic-closure (syntactic-closure-env exp)
-                                 (syntactic-closure-free-names exp)
-                                 (execute (syntactic-closure-exp exp)
-                                          env)))
-        ((symbol? exp)
-         (let ((def (syntactic-environment-def env exp)))
-           (if (and def
-                    (not (expander? (cdr def))))
-               (cdr def)
-               (error "Undefined variable" exp))))
-        ((not (pair? exp))
-         exp)
-        (else (case (car exp)
-                ((quote)
-                 (cadr exp))
-                ((if)
-                 (if (execute (cadr exp) env)
-                     (execute (caddr exp) env)
-                     (if (= (length exp) 4)
-                         (execute (cadddr exp) env)
-                         (when #f #f))))
-                ((begin)
-                 (last (map (lambda (expr)
-                              (execute expr env))
-                            (cdr exp))))
-                ((set!)
-                 (let ((def (syntactic-environment-def env (cadr exp))))
-                   (if def
-                       (set-cdr! def (execute (caddr exp) env))
-                       (error "Undefined variable" (cadr exp)))))
-                ((lambda)
-                 (let ((formals (cadr exp))
-                       (body (cddr exp)))
-                   (lambda args
-                     (if (equal? (length args)
-                                 (length formals))
-                         (let ((extended-env (foldl (lambda (binding env)
-                                                      (extend-syntactic-environment env (car binding) (cdr binding)))
-                                                    env
-                                                    (map cons
-                                                         formals
-                                                         args))))
-                           (last (map (lambda (expr)
-                                        (execute expr extended-env))
-                                      body)))
-                         (error "Arity mismatch" (length args))))))
-                (else
-                 (apply (execute (car exp) env)
-                        (map (lambda (arg)
-                               (execute arg env))
-                             (cdr exp))))))))
-
-(define (sc-macro-transformer f)
-  (lambda (expr use-env def-env)
-    (make-syntactic-closure def-env '()
-                            (f expr use-env))))
-
-(define (rsc-macro-transformer f)
-  (lambda (expr use-env def-env)
-    (f expr def-env)))
-
-(define (er-macro-transformer f)
-  (lambda (expr use-env def-env)
-    (let ((renames '()))
-      (f expr
-         (lambda (identifier)
-           (let ((renamed (assq identifier renames)))
-             (if renamed
-                 (cdr renamed)
-                 (let ((name (make-syntactic-closure def-env '() identifier)))
-                   (set! renames (cons (cons identifier name)
-                                       renames))
-                   name))))
-         (lambda (x y)
-           (identifier=? use-env x use-env y))))))
-
-(define core-interpretation-environment
-  (list (cons 'null? null?)
-        (cons 'pair? pair?)
-        (cons 'cons cons)
-        (cons 'car car)
-        (cons 'cdr cdr)
-        (cons 'list list)
-        (cons 'cadr cadr)
-        (cons 'caddr caddr)
-        (cons 'cddr cddr)
-        (cons 'cdddr cdddr)
-        (cons 'error error)
-        (cons 'make-syntactic-closure make-syntactic-closure)
-        (cons 'identifier? identifier?)
-        (cons 'identifier=? identifier=?)
-        (cons 'sc-macro-transformer sc-macro-transformer)
-        (cons 'rsc-macro-transformer rsc-macro-transformer)
-        (cons 'er-macro-transformer er-macro-transformer)))
 
 ;; Macro-expansion:
 
@@ -259,6 +146,122 @@
                    (cdr exps)
                    cont)))))
   (expand-list-aux env '() exps cont))
+
+;; Interpreter:
+
+(define (execute exp env)
+  (cond ((syntactic-closure? exp)
+         (make-syntactic-closure (syntactic-closure-env exp)
+                                 (syntactic-closure-free-names exp)
+                                 (execute (syntactic-closure-exp exp)
+                                          env)))
+        ((symbol? exp)
+         (let ((def (syntactic-environment-def env exp)))
+           (if (and def
+                    (not (expander? (cdr def))))
+               (cdr def)
+               (error "Undefined variable" exp))))
+        ((not (pair? exp))
+         exp)
+        (else (case (car exp)
+                ((quote)
+                 (cadr exp))
+                ((if)
+                 (if (execute (cadr exp) env)
+                     (execute (caddr exp) env)
+                     (if (= (length exp) 4)
+                         (execute (cadddr exp) env)
+                         (when #f #f))))
+                ((begin)
+                 (last (map (lambda (expr)
+                              (execute expr env))
+                            (cdr exp))))
+                ((set!)
+                 (let ((def (syntactic-environment-def env (cadr exp))))
+                   (if def
+                       (set-cdr! def (execute (caddr exp) env))
+                       (error "Undefined variable" (cadr exp)))))
+                ((lambda)
+                 (let ((formals (cadr exp))
+                       (body (cddr exp)))
+                   (lambda args
+                     (if (equal? (length args)
+                                 (length formals))
+                         (let ((extended-env (foldl (lambda (binding env)
+                                                      (extend-syntactic-environment env (car binding) (cdr binding)))
+                                                    env
+                                                    (map cons
+                                                         formals
+                                                         args))))
+                           (last (map (lambda (expr)
+                                        (execute expr extended-env))
+                                      body)))
+                         (error "Arity mismatch" (length args))))))
+                (else
+                 (apply (execute (car exp) env)
+                        (map (lambda (arg)
+                               (execute arg env))
+                             (cdr exp))))))))
+
+(define (expanded-value env val)
+  val)
+
+(define (identifier? id)
+  (or (symbol? id)
+      (and (syntactic-closure? id)
+           (symbol? (syntactic-closure-exp id)))))
+
+(define (identifier=? env1 id1 env2 id2)
+  (and (identifier? id1)
+       (identifier? id2)
+       (equal? (expand env1 id1 expanded-value)
+               (expand env2 id2 expanded-value))))
+
+(define (sc-macro-transformer f)
+  (lambda (expr use-env def-env)
+    (make-syntactic-closure def-env '()
+                            (f expr use-env))))
+
+(define (rsc-macro-transformer f)
+  (lambda (expr use-env def-env)
+    (f expr def-env)))
+
+(define (er-macro-transformer f)
+  (lambda (expr use-env def-env)
+    (let ((renames '()))
+      (f expr
+         (lambda (identifier)
+           (let ((renamed (assq identifier renames)))
+             (if renamed
+                 (cdr renamed)
+                 (let ((name (make-syntactic-closure def-env '() identifier)))
+                   (set! renames (cons (cons identifier name)
+                                       renames))
+                   name))))
+         (lambda (x y)
+           (identifier=? use-env x use-env y))))))
+
+(define core-interpretation-environment
+  (list (cons 'null? null?)
+        (cons 'pair? pair?)
+        (cons 'list? list?)
+        (cons 'cons cons)
+        (cons 'car car)
+        (cons 'cdr cdr)
+        (cons 'list list)
+        (cons 'cadr cadr)
+        (cons 'caddr caddr)
+        (cons 'cddr cddr)
+        (cons 'cdddr cdddr)
+        (cons 'memv memv)
+        (cons 'eqv? eqv?)
+        (cons 'error error)
+        (cons 'make-syntactic-closure make-syntactic-closure)
+        (cons 'identifier? identifier?)
+        (cons 'identifier=? identifier=?)
+        (cons 'sc-macro-transformer sc-macro-transformer)
+        (cons 'rsc-macro-transformer rsc-macro-transformer)
+        (cons 'er-macro-transformer er-macro-transformer)))
 
 ;; Expanders:
 
@@ -367,7 +370,8 @@
 
 ;; Example:
 
-(expand scheme-syntactic-environment
+(pretty-print
+ (expand scheme-syntactic-environment
         '(begin
            ;; Some of these macros were taken from the great Chibi Scheme implementation.
            ;; Copyright (c) 2009-2012 Alex Shinn.  All rights reserved.
@@ -413,6 +417,7 @@
                       (else (list (rename 'if) (cadr expr)
                                   (cons (rename 'and) (cddr expr))
                                   #f))))))
+           ;; Some tests for the macros.
            (cond ((or (something? x)
                       (something-else? y))
                   do this stuff)
@@ -432,16 +437,19 @@
            (lambda (let)
              (let ((a b))
                c))
+           (lambda (let)
+             (let* ((a b))
+               c))
            (display `(list ,(+ 2 2) "wut"))
            (define-syntax let
              (sc-macro-transformer
               (lambda (exp def-env)
-               `(begin
-                  (display "letting ")
-                  (display ',(cadr exp))
-                  (display " to do ")
-                  (display ',(caddr exp))
-                  (newline)))))
+                `(begin
+                   (display "letting ")
+                   (display ',(cadr exp))
+                   (display " to do ")
+                   (display ',(caddr exp))
+                   (newline)))))
            (lambda (let)
              (let ((a b))
                c))
@@ -454,4 +462,4 @@
                 `(+ ,(cadr exp)
                     ,(caddr exp)))))
            (foo 5 23))
-        expanded-value)
+        expanded-value))
