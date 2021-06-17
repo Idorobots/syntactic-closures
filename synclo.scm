@@ -107,7 +107,8 @@
 
 (define (sc-macro-transformer f)
   (lambda (expr use-env def-env)
-    (make-syntactic-closure def-env '() (f expr def-env))))
+    (make-syntactic-closure def-env '()
+                            (f expr use-env))))
 
 (define (rsc-macro-transformer f)
   (lambda (expr use-env def-env)
@@ -134,7 +135,9 @@
         (cons 'cdr cdr)
         (cons 'list list)
         (cons 'cadr cadr)
+        (cons 'caddr caddr)
         (cons 'cddr cddr)
+        (cons 'cdddr cdddr)
         (cons 'make-syntactic-closure make-syntactic-closure)
         (cons 'identifier=? identifier=?)
         (cons 'sc-macro-transformer sc-macro-transformer)
@@ -205,12 +208,12 @@
                  (cont env `(,(car exp) ,@expanded)))))
 
 (define (expand-lambda env exp cont)
-  (let ((env (add-identifier-list env
+  (let ((internal-env (add-identifier-list env
                                   (cadr exp))))
-    (expand-list env (cadr exp)
-                 (lambda (env formals)
-                   (expand-list env (cddr exp)
-                                (lambda (env body)
+    (expand-list internal-env (cadr exp)
+                 (lambda (internal-env formals)
+                   (expand-list internal-env (cddr exp)
+                                (lambda (internal-env body)
                                   (cont env
                                         `(lambda ,formals
                                            ,@body))))))))
@@ -340,61 +343,20 @@
 (define (expanded-value env val)
   val)
 
-(define with-macro-expander
+(define define-syntax-expander
   (lambda (exp with-macro-env def-env)
-    (let* ((keyword (caadr exp))
+    (let* ((keyword (cadr exp))
            (transformer (execute
-                         (expand def-env
-                                 `(lambda ,(cdadr exp)
-                                    ,(caddr exp))
-                                 expanded-value)
+                         (expand def-env (caddr exp) expanded-value)
                          core-interpretation-environment))
-           (expander (make-expander with-macro-env
-                                    (lambda (exp env def-env)
-                                      (make-syntactic-closure
-                                       def-env '()
-                                       (apply transformer
-                                              (make-syntactic-closure-list
-                                               env '()
-                                               (cdr exp))))))))
-      (make-syntactic-closure def-env '()
-                              `(begin
-                                 ,@(make-syntactic-closure-list
-                                    (extend-syntactic-environment
-                                     with-macro-env
-                                     keyword
-                                     expander)
-                                    '()
-                                    (cdddr exp)))))))
-
-(define with-macro-rec-expander
-  (lambda (exp with-macro-env def-env)
-    (let* ((keyword (caadr exp))
-           (transformer (execute
-                         (expand def-env
-                                 `(lambda ,(cdadr exp)
-                                    ,(caddr exp))
-                                 expanded-value)
-                         core-interpretation-environment))
-           (extended-env #f)
-           (expander (make-expander extended-env
-                                    (lambda (exp env def-env)
-                                      (make-syntactic-closure
-                                       def-env '()
-                                       (apply transformer
-                                              (make-syntactic-closure-list
-                                               env '()
-                                               (cdr exp))))))))
-      (set! extended-env
-            (extend-syntactic-environment
-             with-macro-env
-             keyword
-             expander))
-      (make-syntactic-closure def-env '()
-                              `(begin
-                                 ,@(make-syntactic-closure-list
-                                    extended-env '()
-                                    (cdddr exp)))))))
+           (expander (make-expander #f ;; NOTE This will be adjusted shortly.
+                                    transformer))
+           (extended-env (extend-syntactic-environment
+                          with-macro-env
+                          keyword
+                          expander)))
+      (set-expander-env! expander extended-env)
+      (make-syntactic-closure extended-env '() (when #f #f)))))
 
 (define quasiquote-expander
   (lambda (exp env def-env)
@@ -427,14 +389,13 @@
             (make-expander #f ;; NOTE This will be adjusted shortly.
                            (cadr expander))))
          core-syntactic-environment
-         (list (list 'delay delay-expander)
+         (list (list 'define-syntax define-syntax-expander)
+               (list 'delay delay-expander)
                (list 'or or-expander)
                (list 'and and-expander)
                (list 'let let-expander)
                (list 'cond cond-expander)
                (list 'case case-expander)
-               (list 'with-macro with-macro-expander)
-               (list 'with-macro-rec with-macro-rec-expander)
                (list 'quasiquote quasiquote-expander))))
 
 (map (lambda (b)
@@ -467,25 +428,26 @@
            (lambda (let)
              (let ((a b))
                c))
-           (with-macro (let x y)
-                       `(begin
-                          (display "letting ")
-                          (display ',x)
-                          (display " to do ")
-                          (display ',y)
-                          (newline))
-                       (lambda (let)
-                         (let ((a b))
-                           c)))
-           (with-macro (let x y)
-                       `(begin
-                          (display "letting ")
-                          (display ',x)
-                          (display " to do ")
-                          (display ',y)
-                          (newline))
-                       (lambda (let*)
-                         (let ((a b))
-                           c)))
-           (display `(list ,(+ 2 2) "wut")))
+           (display `(list ,(+ 2 2) "wut"))
+           (define-syntax let
+             (sc-macro-transformer
+              (lambda (exp def-env)
+               `(begin
+                  (display "letting ")
+                  (display ',(cadr exp))
+                  (display " to do ")
+                  (display ',(caddr exp))
+                  (newline)))))
+           (lambda (let)
+             (let ((a b))
+               c))
+           (lambda (let*)
+             (let ((a b))
+               c))
+           (define-syntax foo
+             (sc-macro-transformer
+              (lambda (exp def-env)
+                `(+ ,(cadr exp)
+                    ,(caddr exp)))))
+           (foo 5 23))
         expanded-value)
