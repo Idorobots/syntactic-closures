@@ -146,7 +146,7 @@
 
 ;; Interpreter:
 
-(define (execute env exp)
+(define (execute env exp cont)
   ((cond ((syntactic-closure? exp) execute-syntactic-closure)
          ((symbol? exp) execute-symbol)
          ((not (pair? exp)) execute-constant)
@@ -155,70 +155,117 @@
                  ((if) execute-if)
                  ((begin) execute-begin)
                  ((set!) execute-set!)
+                 ((define) execute-define)
                  ((lambda) execute-lambda)
                  (else execute-application))))
    env
-   exp))
+   exp
+   cont))
 
-(define (execute-syntactic-closure env exp)
-  (make-syntactic-closure (syntactic-closure-env exp)
-                          (syntactic-closure-free-names exp)
-                          (execute env
-                                   (syntactic-closure-exp exp))))
+(define (execute-syntactic-closure env exp cont)
+  (execute env
+           (syntactic-closure-exp exp)
+           (lambda (env exp)
+             (make-syntactic-closure (syntactic-closure-env exp)
+                                     (syntactic-closure-free-names exp)
+                                     expr))))
 
-(define (execute-symbol env exp)
+(define (execute-symbol env exp cont)
   (let ((def (environment-def env exp)))
-    (if (and def
-             (not (expander? (cdr def))))
-        (cdr def)
-        (error "Undefined variable" exp))))
+    (cond ((not def)
+           (error "Undefined variable" exp))
+          ((expander? (cdr def))
+           (error "Attempting to use an expander outside of static scope" exp))
+          ;; NOTE These are introduced by define & lambdas.
+          ((box? (cdr def))
+           (cont env (unbox (cdr def))))
+          (else
+           (cont env (cdr def))))))
 
-(define (execute-constant env exp)
-  exp)
+(define (execute-constant env exp cont)
+  (cont env exp))
 
-(define (execute-quote env exp)
-  (cadr exp))
+(define (execute-quote env exp cont)
+  (cont env (cadr exp)))
 
-(define (execute-if env exp)
-  (if (execute env (cadr exp))
-      (execute env (caddr exp))
-      (if (= (length exp) 4)
-          (execute env (cadddr exp))
-          (when #f #f))))
+(define (execute-if env exp cont)
+  (execute env (cadr exp)
+           (lambda (_ condition)
+             (execute env
+                      (cond (condition
+                             (caddr exp))
+                            ((= (length exp) 4)
+                             (cadddr exp))
+                            (else
+                             (when #f #f)))
+                      cont))))
 
-(define (execute-begin env exp)
-  (last (map (lambda (expr)
-               (execute env expr))
-             (cdr exp))))
+(define (execute-begin env exp cont)
+  (execute-list env (cdr exp) cont))
 
-(define (execute-set! env exp)
+(define (execute-list env exps cont)
+  (define (execute-list-aux env-acc acc exps cont)
+    (if (null? exps)
+        (cont env-acc acc)
+        (execute env-acc (car exps)
+                 (lambda (env-acc value)
+                   (execute-list-aux env-acc value (cdr exps) cont)))))
+  (execute-list-aux env (when #f #f) exps cont))
+
+(define (execute-set! env exp cont)
   (let ((def (environment-def env (cadr exp))))
     (if def
-        (set-cdr! def (execute env (caddr exp)))
+        (execute env (caddr exp)
+                 (lambda (env value)
+                   (set-box! (cdr def) value)
+                   (cont env value)))
         (error "Undefined variable" (cadr exp)))))
 
-(define (execute-lambda env exp)
+(define (execute-define env exp cont)
+  (let* ((name (cadr exp))
+         (value (caddr exp))
+         (extended-env (extend-environment env name (box #f))))
+    (execute extended-env value
+             (lambda (_ executed)
+               (set-box! (cdr (environment-def extended-env name))
+                         executed)
+               (cont extended-env
+                     (when #f #f))))))
+
+(define (execute-lambda env exp cont)
   (let ((formals (cadr exp))
         (body (cddr exp)))
-    (lambda args
-      (if (equal? (length args)
-                  (length formals))
-          (let ((extended-env (foldl (lambda (binding env)
-                                       (extend-environment env (car binding) (cdr binding)))
-                                     env
-                                     (map cons
-                                          formals
-                                          args))))
-            (last (map (lambda (expr)
-                         (execute extended-env expr))
-                       body)))
-          (error "Arity mismatch" (length args))))))
+    (cont env
+          (lambda args
+            (if (equal? (length args)
+                        (length formals))
+                (let ((extended-env (foldl (lambda (binding env)
+                                             (extend-environment env
+                                                                 (car binding)
+                                                                 (box (cdr binding))))
+                                           env
+                                           (map cons
+                                                formals
+                                                args))))
+                  (execute-list extended-env
+                                body
+                                resulting-value))
+                (error "Arity mismatch" (length args)))))))
 
-(define (execute-application env exp)
-  (apply (execute env (car exp))
-         (map (lambda (arg)
-                (execute env arg))
-              (cdr exp))))
+(define (execute-application env exp cont)
+  (define (execute-args env-acc acc args cont)
+    (if (null? args)
+        (cont env-acc (reverse acc))
+        (execute env (car args)
+                 (lambda (env-acc arg)
+                   (execute-args env-acc (cons arg acc) (cdr args) cont)))))
+  (execute env (car exp)
+           (lambda (_ op)
+             (execute-args env '() (cdr exp)
+                           (lambda (_ args)
+                             (cont env (apply op args)))))))
+
+;; Interpretation env
 
 (define (resulting-value env val)
   val)
@@ -272,6 +319,10 @@
         (cons 'cdddr cdddr)
         (cons 'memv memv)
         (cons 'eqv? eqv?)
+        (cons '+ +)
+        (cons '- -)
+        (cons '* *)
+        (cons '/ /)
         (cons 'error error)
         (cons 'make-syntactic-closure make-syntactic-closure)
         (cons 'identifier? identifier?)
@@ -335,7 +386,8 @@
            (transformer (execute core-interpretation-environment
                                  (expand define-syntax-env
                                          (caddr exp)
-                                         resulting-value)))
+                                         resulting-value)
+                                 resulting-value))
            (expander (make-expander #f ;; NOTE This will be adjusted shortly.
                                     (lambda (exp use-env def-env cont)
                                       ;; NOTE Use-defined macros canot introduce new definitions,
@@ -487,7 +539,12 @@
             (define-syntax foo
               (sc-macro-transformer
                (lambda (exp def-env)
+                 (define foo
+                   (lambda (a b)
+                     (+ a b)))
                  `(+ ,(cadr exp)
-                     ,(caddr exp)))))
+                     ,(caddr exp)
+                     ,(foo (cadr exp)
+                           (caddr exp))))))
             (foo 5 23))
          resulting-value))
