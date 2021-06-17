@@ -58,4 +58,13 @@
            ,(foo (cadr exp)
                  (caddr exp))))))
 
-  (foo 5 23))
+  (foo 5 23)
+
+  (define-syntax bar
+    (syntax-rules (+)
+      ((bar a)
+       a)
+      ((bar a as ...)
+       (+ a (bar as ...)))))
+
+  (bar 1 2 3 4 5))

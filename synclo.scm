@@ -9,16 +9,14 @@
 
 ;; Syntactic closures:
 
-(define-struct syntactic-closure (env free-names exp) #:transparent)
+(define-struct syntactic-closure (env free-names exp))
 
 (define (make-syntactic-closure-list env free-names exps)
   (map (lambda (exp)
          (make-syntactic-closure env free-names exp))
        exps))
 
-;; Syntactic environments:
-
-(define core-environment '())
+;; Environments:
 
 (define (extend-environment outer-env keyword expander)
   (cons (cons keyword expander)
@@ -265,7 +263,7 @@
                            (lambda (_ args)
                              (cont env (apply op args)))))))
 
-;; Interpretation env
+;; Interpretation env:
 
 (define (resulting-value env val)
   val)
@@ -293,6 +291,17 @@
       (or (pred (car list))
           (some pred (cdr list)))))
 
+(define (find pred list)
+  (cond ((null? list)
+         #f)
+        ((pred (car list))
+         (car list))
+        (else
+         (find pred (cdr list)))))
+
+(define (cons-source kar kdr source)
+  (cons kar kdr))
+
 (define (sc-macro-transformer f)
   (lambda (expr use-env def-env)
     (make-syntactic-closure def-env '()
@@ -318,7 +327,8 @@
            (identifier=? use-env x use-env y))))))
 
 (define core-interpretation-environment
-  (list (cons 'null? null?)
+  (list (cons 'not not)
+        (cons 'null? null?)
         (cons 'pair? pair?)
         (cons 'list? list?)
         (cons 'cons cons)
@@ -326,6 +336,7 @@
         (cons 'cdr cdr)
         (cons 'list list)
         (cons 'length length)
+        (cons 'append append)
         (cons 'caar caar)
         (cons 'cdar cdar)
         (cons 'cadr cadr)
@@ -336,8 +347,14 @@
         (cons 'eq? eq?)
         (cons 'equal? equal?)
         (cons 'memv memv)
+        (cons 'memq memq)
+        (cons 'member member)
+        (cons 'assv assv)
+        (cons 'assq assq)
+        (cons 'assoc assoc)
         (cons 'every every)
         (cons 'some some)
+        (cons 'find find)
         (cons 'map map)
         (cons 'filter filter)
         (cons 'foldl foldl)
@@ -345,6 +362,10 @@
         (cons 'vector? vector?)
         (cons 'list->vector list->vector)
         (cons 'vector->list vector->list)
+        (cons 'string->symbol string->symbol)
+        (cons 'symbol->string symbol->string)
+        (cons 'string-append string-append)
+        (cons 'number->string number->string)
         (cons '+ +)
         (cons '- -)
         (cons '* *)
@@ -354,6 +375,7 @@
         (cons '> >)
         (cons '<= <=)
         (cons '>= >=)
+        (cons 'cons-source cons-source)
         (cons 'error error)
         (cons 'make-syntactic-closure make-syntactic-closure)
         (cons 'identifier? identifier?)
@@ -392,21 +414,9 @@
 ;; Global syntactic env:
 
 (define scheme-environment
-  (let ((env (foldl (lambda (expander env)
-                      (extend-environment
-                       env
-                       (car expander)
-                       (make-expander #f ;; NOTE This will be adjusted shortly.
-                                      (cadr expander))))
-                    core-environment
-                    (list (list 'define-syntax define-syntax-expander)))))
-    (map (lambda (b)
-           (if (expander? (cdr b))
-               (set-expander-env! (cdr b)
-                                  env)
-               b))
-         env)
-    env))
+  (list (cons 'define-syntax
+              (make-expander '()
+                             define-syntax-expander))))
 
 ;; Example:
 
@@ -423,7 +433,8 @@
             (expand env
                     code
                     (lambda (_ expanded)
-                      (displayln "Input code:")
+                      (displayln ";; Input code:")
                       (pretty-print code)
-                      (displayln "Expanded code:")
+                      (newline)
+                      (displayln ";; Expanded code:")
                       (pretty-print expanded))))))
