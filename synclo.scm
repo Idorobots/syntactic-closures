@@ -131,7 +131,7 @@
   (list (cons 'null? null?)
         (cons 'cons cons)
         (cons 'car car)
-        (cons 'cdr 'cdr)
+        (cons 'cdr cdr)
         (cons 'list list)
         (cons 'cadr cadr)
         (cons 'cddr cddr)
