@@ -47,19 +47,6 @@
     (let ((a b))
       c))
 
-  (define-syntax foo
-    (sc-macro-transformer
-     (lambda (exp def-env)
-       (define foo
-         (lambda (a b)
-           (+ a b)))
-       `(+ ,(cadr exp)
-           ,(caddr exp)
-           ,(foo (cadr exp)
-                 (caddr exp))))))
-
-  (foo 5 23)
-
   (define-syntax bar
     (syntax-rules (+)
       ((bar a)
@@ -67,4 +54,19 @@
       ((bar a as ...)
        (+ a (bar as ...)))))
 
-  (bar 1 2 3 4 5))
+  (bar 1 2 3 4 5)
+
+  (define-for-syntax foo
+    (lambda (a b)
+      (+ a b)))
+
+  (define-syntax baz
+    (sc-macro-transformer
+     (lambda (exp def-env)
+       (list '+
+             (cadr exp)
+             (caddr exp)
+             (foo (cadr exp)
+                  (caddr exp))))))
+  (foo 5 23)
+  (baz 5 23))

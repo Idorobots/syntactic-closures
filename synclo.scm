@@ -72,10 +72,10 @@
 (define (expand-symbol env exp cont)
   (let ((def (environment-def env exp)))
     (if def
-        (if (expander? (cdr def))
+        (if (identifier? (cdr def))
+            (cont env (cdr def))
             ;; FIXME Could this allow for symbol expansion?
-            (expand-free-variable env exp cont)
-            (cont env (cdr def)))
+            (expand-free-variable env exp cont))
         (expand-free-variable env exp cont))))
 
 (define (expand-application env exp cont)
@@ -279,53 +279,6 @@
        (equal? (expand env1 id1 resulting-value)
                (expand env2 id2 resulting-value))))
 
-(define (every pred list)
-  (if (null? list)
-      #t
-      (and (pred (car list))
-           (every pred (cdr list)))))
-
-(define (some pred list)
-  (if (null? list)
-      #f
-      (or (pred (car list))
-          (some pred (cdr list)))))
-
-(define (find pred list)
-  (cond ((null? list)
-         #f)
-        ((pred (car list))
-         (car list))
-        (else
-         (find pred (cdr list)))))
-
-(define (cons-source kar kdr source)
-  (cons kar kdr))
-
-(define (sc-macro-transformer f)
-  (lambda (expr use-env def-env)
-    (make-syntactic-closure def-env '()
-                            (f expr use-env))))
-
-(define (rsc-macro-transformer f)
-  (lambda (expr use-env def-env)
-    (f expr def-env)))
-
-(define (er-macro-transformer f)
-  (lambda (expr use-env def-env)
-    (let ((renames '()))
-      (f expr
-         (lambda (identifier)
-           (let ((renamed (assq identifier renames)))
-             (if renamed
-                 (cdr renamed)
-                 (let ((name (make-syntactic-closure def-env '() identifier)))
-                   (set! renames (cons (cons identifier name)
-                                       renames))
-                   name))))
-         (lambda (x y)
-           (identifier=? use-env x use-env y))))))
-
 (define core-interpretation-environment
   (list (cons 'not not)
         (cons 'null? null?)
@@ -352,9 +305,6 @@
         (cons 'assv assv)
         (cons 'assq assq)
         (cons 'assoc assoc)
-        (cons 'every every)
-        (cons 'some some)
-        (cons 'find find)
         (cons 'map map)
         (cons 'filter filter)
         (cons 'foldl foldl)
@@ -375,14 +325,10 @@
         (cons '> >)
         (cons '<= <=)
         (cons '>= >=)
-        (cons 'cons-source cons-source)
         (cons 'error error)
         (cons 'make-syntactic-closure make-syntactic-closure)
         (cons 'identifier? identifier?)
-        (cons 'identifier=? identifier=?)
-        (cons 'sc-macro-transformer sc-macro-transformer)
-        (cons 'rsc-macro-transformer rsc-macro-transformer)
-        (cons 'er-macro-transformer er-macro-transformer)))
+        (cons 'identifier=? identifier=?)))
 
 ;; Expanders:
 
@@ -391,7 +337,7 @@
 (define define-syntax-expander
   (lambda (exp define-syntax-env def-env cont)
     (let* ((keyword (cadr exp))
-           (transformer (execute core-interpretation-environment
+           (transformer (execute define-syntax-env
                                  (expand define-syntax-env
                                          (caddr exp)
                                          resulting-value)
@@ -411,24 +357,36 @@
       (cont extended-env
             (when #f #f)))))
 
+(define define-for-syntax-expander
+  (lambda (exp define-env def-env cont)
+    (let ((name (cadr exp))
+          (value (caddr exp)))
+      (expand define-env
+              value
+              (lambda (env expanded)
+                ;; NOTE We put the evaluated function into the environment so that it's available for syntax...
+                (execute env `(define ,name ,expanded)
+                         (lambda (env _)
+                           (cont env
+                                 ;; NOTE ...but also replace it with an interpretable variant.
+                                 `(define ,name ,expanded)))))))))
+
 ;; Global syntactic env:
 
 (define scheme-environment
-  (list (cons 'define-syntax
-              (make-expander '()
-                             define-syntax-expander))))
+  (list* (cons 'define-syntax
+               (make-expander '()
+                              define-syntax-expander))
+         (cons 'define-for-syntax
+               (make-expander '()
+                              define-for-syntax-expander))
+         core-interpretation-environment))
 
-;; Example:
+;; Examples:
 
-(let ((code (with-input-from-file
-                "tests.scm"
-              (lambda ()
-                (read)))))
+(let ((code (with-input-from-file "tests.scm" (lambda () (read)))))
   (expand scheme-environment
-          (with-input-from-file
-              "init.scm"
-            (lambda ()
-              (read)))
+          (with-input-from-file "init.scm" (lambda () (read)))
           (lambda (env _)
             (expand env
                     code
