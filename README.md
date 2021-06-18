@@ -14,4 +14,4 @@ Caveats:
 - All variables are boxed in the interpreter. The proper way would be to run an assignment conversion first.
 - Runtime functions that are ment to be available to macros need a `define-for-syntax` declaration instead of just `define`, they are still available during runtime as normal defines.
 - This code currently only runs in Racket.
-- `er-macro-transformer`-renamed variables end up not renamed after full expansion. Technically all the renamed identifiers have a unique environment attached to them, so a post-processing step that replaces these names with something unique could be implemented.
+- `er-macro-transformer`-renamed variables are handled in a hacky fashion. Technically all the renamed identifiers have a unique environment attached to them, so a post-processing step that replaces these names with something unique could be implemented.

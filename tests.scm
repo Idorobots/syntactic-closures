@@ -1,13 +1,16 @@
 ;; Some tests for the macros.
 (begin
-  (cond ((or (something? x)
-             (something-else? y))
+  (let ((x 23))
+    (* x 5))
+
+  (or 1 2 3 4 5)
+
+  (cond ((something? x)
          do this stuff)
         ((otherwise?)
-         (let ((x 23))
-           (* x x)))
+         do some other stuff)
         (else
-         23))
+         do that))
 
   (case 23
     ((23) #t)
@@ -27,7 +30,7 @@
     (let* ((a b))
       c))
 
-  (display `(list ,(+ 2 2) "wut"))
+  (display `(list ,(+ 2 2) ,@(1 2 3 4 5)))
 
   (define-syntax let
     (sc-macro-transformer

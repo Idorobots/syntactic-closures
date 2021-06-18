@@ -25,8 +25,15 @@
   (cons (cons keyword expander)
         outer-env))
 
+(define (identifier? id)
+  (or (symbol? id)
+      (and (syntactic-closure? id)
+           (symbol? (syntactic-closure-exp id)))))
+
 (define (rename-identifier outer-env identifier)
-  (let ((variable (fresh-symbol identifier)))
+  (let ((variable (fresh-symbol (if (syntactic-closure? identifier)
+                                    (syntactic-closure-exp identifier)
+                                    identifier))))
     (extend-environment outer-env identifier variable)))
 
 (define (rename-identifier-list env identifiers)
@@ -43,61 +50,57 @@
           else-syntactic-env))
 
 (define (environment-def env keyword)
-  (assoc keyword env))
+  (assq keyword env))
 
 ;; Macro-expansion:
 
 (define (macro-expand env exp cont)
-  ((cond ((syntactic-closure? exp) macro-expand-syntactic-closure)
-         ((symbol? exp) macro-expand-symbol)
+  ((cond ((identifier? exp) macro-expand-identifier)
+         ((syntactic-closure? exp) macro-expand-syntactic-closure)
          ((not (pair? exp)) macro-expand-constant)
-         (else (case (car exp)
-                 ((quote) macro-expand-quote)
-                 ((if begin set!) macro-expand-simple)
-                 ((lambda) macro-expand-lambda)
-                 (else macro-expand-application))))
+         (else macro-expand-application))
    env
    exp
    cont))
 
-(define (macro-expand-constant env exp cont)
-  (cont env exp))
-
-(define (macro-expand-quote env exp cont)
-  (cont env
-        (if (syntactic-closure? (cadr exp))
-            `(quote ,(syntactic-closure-exp (cadr exp)))
-            exp)))
-
-(define (macro-expand-free-variable env exp cont)
-  (cont env exp))
-
-(define (identifier? id)
-  (or (symbol? id)
-      (and (syntactic-closure? id)
-           (symbol? (syntactic-closure-exp id)))))
-
-(define (macro-expand-symbol env exp cont)
+;; FIXME This expands both symbols & syntactic-closures containing symbols to facilitate er-macro-transformer renaming.
+;; FIXME This should really be done as a separate post-processing step.
+(define (macro-expand-identifier env exp cont)
   (let ((def (environment-def env exp)))
-    (if def
-        (if (identifier? (cdr def))
-            (cont env (cdr def))
-            ;; FIXME Could this allow for symbol expansion?
-            (macro-expand-free-variable env exp cont))
-        (macro-expand-free-variable env exp cont))))
+    (cond ((and def (symbol? (cdr def)))
+           ;; Just a replacement variable.
+           (cont env (cdr def)))
+          ((and def (expander? (cdr def)))
+           (cont env (cdr def)))
+          ((syntactic-closure? exp)
+           (macro-expand-syntactic-closure env exp cont))
+          (else
+           (macro-expand-free-variable env exp cont)))))
 
 (define (macro-expand-application env exp cont)
-  (let* ((op (car exp))
-         (def (if (syntactic-closure? op)
-                  (environment-def (syntactic-closure-env op)
-                                   (syntactic-closure-exp op))
-                  (environment-def env op))))
-    (if def
-        (if (expander? (cdr def))
-            (macro-expand-expander (cdr def) env exp cont)
-            ;; NOTE Originally the cdr is expanded in the outer env.
-            (macro-expand-combination env exp cont))
-        (macro-expand-combination env exp cont))))
+  (macro-expand env
+                (car exp)
+                (lambda (_ op)
+                  (if (expander? op)
+                      (macro-expand-expander op env exp cont)
+                      ((case op
+                         ((quote) macro-expand-quote)
+                         ((if begin set! define) macro-expand-simple)
+                         ((lambda) macro-expand-lambda)
+                         ;; NOTE Since the operation is already expanded all we need is to expand the args.
+                         (else macro-expand-simple))
+                       env
+                       (cons op (cdr exp))
+                       cont)))))
+
+(define (macro-expand-syntactic-closure use-env exp cont)
+  (macro-expand (filter-environment (syntactic-closure-free-names exp)
+                                    use-env
+                                    (syntactic-closure-env exp))
+                (syntactic-closure-exp exp)
+                (lambda (_ expanded)
+                  (cont use-env
+                        expanded))))
 
 (define (macro-expand-expander expander env exp cont)
   ;; NOTE The original paper implementation requires the expanded value to be a syntactic closure.
@@ -108,10 +111,14 @@
    (lambda (env expanded)
      (macro-expand env expanded cont))))
 
-(define (macro-expand-combination env exp cont)
-  (macro-expand-list env exp
-                     (lambda (env expanded)
-                       (cont env `(,@expanded)))))
+(define (macro-expand-constant env exp cont)
+  (cont env exp))
+
+(define (macro-expand-quote env exp cont)
+  (cont env exp))
+
+(define (macro-expand-free-variable env exp cont)
+  (cont env exp))
 
 (define (macro-expand-simple env exp cont)
   (macro-expand-list env (cdr exp)
@@ -128,15 +135,6 @@
                                                   `(lambda ,formals
                                                      ,@body)))))))
 
-(define (macro-expand-syntactic-closure use-env exp cont)
-  (macro-expand (filter-environment (syntactic-closure-free-names exp)
-                                    use-env
-                                    (syntactic-closure-env exp))
-                (syntactic-closure-exp exp)
-                (lambda (_ expanded)
-                  (cont use-env
-                        expanded))))
-
 (define (macro-expand-list env exps cont)
   (define (macro-expand-list-aux env-acc acc exps cont)
     (if (null? exps)
@@ -147,6 +145,9 @@
   (macro-expand-list-aux env '() exps cont))
 
 ;; Interpreter:
+
+(define (resulting-value env val)
+  val)
 
 (define (evaluate env exp cont)
   ((cond ((syntactic-closure? exp) evaluate-syntactic-closure)
@@ -269,16 +270,13 @@
 
 ;; Interpretation env:
 
-(define (resulting-value env val)
-  val)
-
 (define (identifier=? env1 id1 env2 id2)
   (and (identifier? id1)
        (identifier? id2)
        (equal? (macro-expand env1 id1 resulting-value)
                (macro-expand env2 id2 resulting-value))))
 
-(define core-interpretation-environment
+(define (core-interpretation-environment)
   (list (cons 'not not)
         (cons 'null? null?)
         (cons 'pair? pair?)
@@ -374,19 +372,19 @@
 
 ;; Global syntactic env:
 
-(define scheme-environment
+(define (scheme-environment)
   (list* (cons 'define-syntax
                (make-expander '()
                               define-syntax-expander))
          (cons 'define-for-syntax
                (make-expander '()
                               define-for-syntax-expander))
-         core-interpretation-environment))
+         (core-interpretation-environment)))
 
 ;; Examples:
 
 (let ((code (with-input-from-file "tests.scm" (lambda () (read)))))
-  (macro-expand scheme-environment
+  (macro-expand (scheme-environment)
                 (with-input-from-file "init.scm" (lambda () (read)))
                 (lambda (env _)
                   (macro-expand env
